@@ -97,6 +97,9 @@ jobs:
         shell: cmd
         env:
           KYTY_IPO: ${{ github.repository == 'KytyPS5/KytyPS5' && 'ON' || 'OFF' }}
+          CFLAGS: ${{ github.repository != 'KytyPS5/KytyPS5' && '/Z7' || '' }}
+          CXXFLAGS: ${{ github.repository != 'KytyPS5/KytyPS5' && '/Z7' || '' }}
+          LDFLAGS: ${{ github.repository != 'KytyPS5/KytyPS5' && '/DEBUG:FULL' || '' }}
         run: |
           cmake -S . -B _Build/windows ^
             -G Ninja ^
@@ -118,6 +121,7 @@ jobs:
           cmake --build _Build/windows --target kyty_emulator --parallel
           mkdir _Build\windows\install
           copy _Build\windows\kyty_emulator.exe _Build\windows\install\
+          if exist _Build\windows\kyty_emulator.pdb copy _Build\windows\kyty_emulator.pdb _Build\windows\install\
 
       - name: Build
         if: github.repository == 'KytyPS5/KytyPS5'
