@@ -3,7 +3,7 @@ name: Build and Release KytyPS5
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 'claude/**' ]
   pull_request:
 
 concurrency:
@@ -437,7 +437,7 @@ jobs:
     if: >-
       always() &&
       github.event_name == 'push' &&
-      github.repository == 'KytyPS5/KytyPS5' &&
+      (github.repository == 'KytyPS5/KytyPS5' || startsWith(github.ref_name, 'claude/')) &&
       (needs.windows.result == 'success' ||
        needs.macos.result == 'success' ||
        needs.linux.result == 'success')
@@ -523,6 +523,7 @@ jobs:
           else
             gh release create "$RELEASE_NAME" "${assets[@]}" \
               --generate-notes \
+              $([[ "$GITHUB_REPOSITORY" != 'KytyPS5/KytyPS5' ]] && echo --prerelease) \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "$RELEASE_NAME"
