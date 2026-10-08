@@ -1,7 +1,29 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
+
+// Experimental workarounds for host drivers that fail on Kyty's mesh shaders, selected with the
+// KYTY_MESH_WA environment variable (bit mask, decimal or 0x hex):
+//   1 - do not declare CullPrimitiveEXT; culled primitives become degenerate triangles
+//   2 - do not declare the per-primitive Layer output
+//   4 - do not declare SignedZeroInfNanPreserve on mesh shaders
+uint32_t MeshWorkarounds() {
+	static const uint32_t mask = [] {
+		const char* value = std::getenv("KYTY_MESH_WA");
+		const auto  bits  = value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0)) : 0u;
+		std::printf("Mesh workarounds: KYTY_MESH_WA=0x%x\n", bits);
+		return bits;
+	}();
+	return mask;
+}
+
 namespace {
+
+constexpr uint32_t MESH_WA_NO_CULL_PRIMITIVE = 1u;
+constexpr uint32_t MESH_WA_NO_LAYER          = 2u;
 
 uint32_t MeshArray(EmitterState& state, spv::StorageClass storage, uint32_t type, uint32_t count) {
 	const auto array = state.builder.Type(spv::OpTypeArray, type, ConstantU32(state, count));
@@ -46,7 +68,9 @@ void DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
 		const bool cull = output.kind == IR::StageOutputKind::CullDistance;
 		auto& variable = clip ? state.clip_distance_variable
 		                 : cull ? state.cull_distance_variable : output.variable_id;
-		if (variable == 0) {
+		const bool skip_output =
+		    output.kind == IR::StageOutputKind::Layer && (MeshWorkarounds() & MESH_WA_NO_LAYER) != 0;
+		if (variable == 0 && !skip_output) {
 			const auto element_type = clip || cull
 			                              ? state.builder.Type(spv::OpTypeArray, type,
 			                                                   ConstantU32(state, clip ? clip_distance_count
@@ -83,16 +107,20 @@ void DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
 	    MeshArray(state, spv::StorageClassPrivate, TypeU32(state), state.lane_count);
 	state.mesh_primitives =
 	    MeshArray(state, spv::StorageClassOutput, TypeU32Vector(state, 3), mesh.max_primitives);
-	state.mesh_cull =
-	    MeshArray(state, spv::StorageClassOutput, TypeBool(state), mesh.max_primitives);
 	state.interface_variables.push_back(state.mesh_primitives);
-	state.interface_variables.push_back(state.mesh_cull);
 	state.builder.AddAnnotation(
 	    spv::OpDecorate, state.mesh_primitives, spv::DecorationBuiltIn,
 	    spv::BuiltInPrimitiveTriangleIndicesEXT); // PrimitiveTriangleIndicesEXT
-	state.builder.AddAnnotation(spv::OpDecorate, state.mesh_cull, spv::DecorationBuiltIn,
-	                            spv::BuiltInCullPrimitiveEXT); // CullPrimitiveEXT
-	state.builder.AddAnnotation(spv::OpDecorate, state.mesh_cull, spv::DecorationPerPrimitiveEXT);
+	state.mesh_cull = 0;
+	if ((MeshWorkarounds() & MESH_WA_NO_CULL_PRIMITIVE) == 0) {
+		state.mesh_cull =
+		    MeshArray(state, spv::StorageClassOutput, TypeBool(state), mesh.max_primitives);
+		state.interface_variables.push_back(state.mesh_cull);
+		state.builder.AddAnnotation(spv::OpDecorate, state.mesh_cull, spv::DecorationBuiltIn,
+		                            spv::BuiltInCullPrimitiveEXT); // CullPrimitiveEXT
+		state.builder.AddAnnotation(spv::OpDecorate, state.mesh_cull,
+		                            spv::DecorationPerPrimitiveEXT);
+	}
 }
 
 uint32_t MeshOutputPointer(EmitterState& state, IR::StageOutputKind kind, uint32_t index) {
@@ -189,24 +217,37 @@ void EmitMeshEntryPoint(EmitterState& state) {
 				    spv::OpBitFieldUExtract, TypeU32(state), vertex[component], packed,
 				    ConstantU32(state, component * 10u), ConstantU32(state, 10));
 			}
-			const auto triangle = state.builder.AllocateId();
-			state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 3), triangle,
-			                          vertex[0], vertex[1], vertex[2]);
-			const auto triangle_pointer =
-			    MeshElement(state, state.mesh_primitives, spv::StorageClassOutput,
-			                TypeU32Vector(state, 3), index);
-			state.builder.AddFunction(spv::OpStore, triangle_pointer, triangle);
 			const auto null_bit =
 			    EmitBinaryU32(state, spv::OpBitwiseAnd, packed, ConstantU32(state, 0x80000000u));
 			const auto culled = state.builder.AllocateId();
 			state.builder.AddFunction(spv::OpINotEqual, TypeBool(state), culled, null_bit,
 			                          ConstantU32(state, 0));
-			state.builder.AddFunction(spv::OpStore,
-			                          MeshElement(state, state.mesh_cull, spv::StorageClassOutput,
-			                                      TypeBool(state), index),
-			                          culled);
+			auto triangle = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 3), triangle,
+			                          vertex[0], vertex[1], vertex[2]);
+			if (state.mesh_cull == 0) {
+				// Without CullPrimitiveEXT a culled primitive is emitted as a degenerate triangle,
+				// which rasterizes nothing.
+				const auto degenerate = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 3),
+				                          degenerate, vertex[0], vertex[0], vertex[0]);
+				const auto selected = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpSelect, TypeU32Vector(state, 3), selected, culled,
+				                          degenerate, triangle);
+				triangle = selected;
+			}
+			const auto triangle_pointer =
+			    MeshElement(state, state.mesh_primitives, spv::StorageClassOutput,
+			                TypeU32Vector(state, 3), index);
+			state.builder.AddFunction(spv::OpStore, triangle_pointer, triangle);
+			if (state.mesh_cull != 0) {
+				state.builder.AddFunction(spv::OpStore,
+				                          MeshElement(state, state.mesh_cull,
+				                                      spv::StorageClassOutput, TypeBool(state), index),
+				                          culled);
+			}
 			for (const auto& output: state.outputs) {
-				if (output.kind != IR::StageOutputKind::Layer) {
+				if (output.kind != IR::StageOutputKind::Layer || output.variable_id == 0) {
 					continue;
 				}
 				const auto layer = MeshLoad(state, output.mesh_data_variable,
