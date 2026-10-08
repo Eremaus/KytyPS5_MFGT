@@ -539,7 +539,17 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			}
 		}
 		if (feedback_aspects && !m_context.GetGraphics().attachment_feedback_loop_enabled) {
-			EXIT("depth attachment feedback loop is not supported by the host\n");
+			// Without VK_EXT_attachment_feedback_loop_* (e.g. AMD's Windows driver), fall back
+			// to the GENERAL layout below. Reads of texels written by the same draw are not
+			// ordered, which may show as minor artifacts but keeps the game running.
+			static bool warned = false;
+			if (!warned) {
+				warned = true;
+				LOGF("warning: depth attachment feedback loop is not supported by the host; "
+				     "using GENERAL layout\n");
+				std::printf("warning: depth attachment feedback loop is not supported by the "
+				            "host; using GENERAL layout\n");
+			}
 		}
 		auto layout = depth_attachment_layout(depth);
 		if (sampled_aspects & ~DepthReadableAspects(layout)) {
