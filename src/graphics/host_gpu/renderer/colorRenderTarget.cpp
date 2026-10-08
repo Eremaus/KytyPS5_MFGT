@@ -71,10 +71,21 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 
 		return;
 	}
-	const auto samples = render_sample_count(rt.attrib.num_fragments);
-	if (samples == 0 || rt.attrib.num_samples != rt.attrib.num_fragments) {
+	// EQAA targets store fewer color fragments than coverage samples. The host has no such
+	// mode, so approximate them as ordinary MSAA at the coverage sample count, which also
+	// keeps them compatible with the depth target of the same pass.
+	const bool eqaa    = rt.attrib.num_samples > rt.attrib.num_fragments;
+	const auto samples = render_sample_count(eqaa ? rt.attrib.num_samples : rt.attrib.num_fragments);
+	if (samples == 0 || rt.attrib.num_samples < rt.attrib.num_fragments) {
 		EXIT("unsupported render-target sample configuration: samples=%u fragments=%u\n",
 		     rt.attrib.num_samples, rt.attrib.num_fragments);
+	}
+	if (eqaa) {
+		static std::atomic_bool warned = false;
+		if (!warned.exchange(true)) {
+			LOGF("warning: approximating EQAA render target (samples=%u fragments=%u) as %ux MSAA\n",
+			     rt.attrib.num_samples, rt.attrib.num_fragments, samples);
+		}
 	}
 	const uint32_t levels = rt.attrib2.num_mip_levels + 1u;
 	if (levels == 0 || levels > 16 || rt.view.current_mip_level >= levels) {
