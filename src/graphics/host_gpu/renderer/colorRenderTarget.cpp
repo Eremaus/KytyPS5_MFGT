@@ -72,10 +72,10 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		return;
 	}
 	// EQAA targets store fewer color fragments than coverage samples. The host has no such
-	// mode, so approximate them as ordinary MSAA at the coverage sample count, which also
-	// keeps them compatible with the depth target of the same pass.
+	// mode, so approximate them as ordinary MSAA at the stored fragment count. That matches
+	// the guest memory layout and the depth target the game pairs with them.
 	const bool eqaa    = rt.attrib.num_samples > rt.attrib.num_fragments;
-	const auto samples = render_sample_count(eqaa ? rt.attrib.num_samples : rt.attrib.num_fragments);
+	const auto samples = render_sample_count(rt.attrib.num_fragments);
 	if (samples == 0 || rt.attrib.num_samples < rt.attrib.num_fragments) {
 		EXIT("unsupported render-target sample configuration: samples=%u fragments=%u\n",
 		     rt.attrib.num_samples, rt.attrib.num_fragments);
