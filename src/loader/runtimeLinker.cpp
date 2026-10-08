@@ -689,6 +689,25 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		}
 		std::printf("--- Guest fault context ---\n");
 		std::printf("thread: %s\n", thread_name);
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+		// Name the host module that owns the faulting pc (e.g. a GPU driver DLL), so crashes
+		// outside the emulator image can be attributed without a debugger.
+		{
+			HMODULE module = nullptr;
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+			                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			                       reinterpret_cast<LPCSTR>(info->exception_address),
+			                       &module) != 0 &&
+			    module != nullptr) {
+				char module_path[MAX_PATH] = {};
+				GetModuleFileNameA(module, module_path, MAX_PATH);
+				std::printf("host module: %s +0x%" PRIx64 "\n", module_path,
+				            info->exception_address - reinterpret_cast<uint64_t>(module));
+			} else {
+				std::printf("host module: (none)\n");
+			}
+		}
+#endif
 		std::printf("rax=%016" PRIx64 " rbx=%016" PRIx64 " rcx=%016" PRIx64 " rdx=%016" PRIx64 "\n"
 		            "rsi=%016" PRIx64 " rdi=%016" PRIx64 " rbp=%016" PRIx64 " rsp=%016" PRIx64 "\n"
 		            "r8 =%016" PRIx64 " r9 =%016" PRIx64 " r10=%016" PRIx64 " r11=%016" PRIx64 "\n"
