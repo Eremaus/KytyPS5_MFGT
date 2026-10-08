@@ -95,11 +95,13 @@ jobs:
 
       - name: Configure
         shell: cmd
+        env:
+          KYTY_IPO: ${{ github.repository == 'KytyPS5/KytyPS5' && 'ON' || 'OFF' }}
         run: |
           cmake -S . -B _Build/windows ^
             -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON ^
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=%KYTY_IPO% ^
             -DKYTY_BUILD_ORIGIN=%KYTY_BUILD_ORIGIN% ^
             -DKYTY_BUILD_REPOSITORY=%KYTY_BUILD_REPOSITORY% ^
             -DKYTY_RELEASE_TAG=${{ needs.metadata.outputs.release_tag }} ^
@@ -109,7 +111,16 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^
             -DCMAKE_PREFIX_PATH="%Qt6_DIR%"
 
+      - name: Build emulator only (fork test build)
+        if: github.repository != 'KytyPS5/KytyPS5'
+        shell: cmd
+        run: |
+          cmake --build _Build/windows --target kyty_emulator --parallel
+          mkdir _Build\windows\install
+          copy _Build\windows\kyty_emulator.exe _Build\windows\install\
+
       - name: Build
+        if: github.repository == 'KytyPS5/KytyPS5'
         shell: cmd
         run: |
           cmake --build _Build/windows --target launcher ^
@@ -119,11 +130,13 @@ jobs:
             resource_materialization_tests shader_vertex_metadata_tests archive_file_tests avplayer_file_tests --parallel
 
       - name: Test
+        if: github.repository == 'KytyPS5/KytyPS5'
         shell: cmd
         run: |
           ctest --test-dir _Build/windows --output-on-failure -R "^(audio_out2_port|pad_haptics|controller_settings|ime_dialog|lru_cache|resource_tracking|scalar_provenance|resource_materialization|shader_vertex_metadata|archive_file|avplayer_file|virtual_memory_allocation)$"
 
       - name: Install
+        if: github.repository == 'KytyPS5/KytyPS5'
         shell: cmd
         run: |
           cmake --install _Build/windows --prefix _Build/windows/install
