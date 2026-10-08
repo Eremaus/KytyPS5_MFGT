@@ -706,6 +706,42 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			} else {
 				std::printf("host module: (none)\n");
 			}
+			// Walk the host call stack from the faulting context so the emulator code that called
+			// into the faulting module can be identified (symbolize offsets with the build's PDB).
+			if (info->native_context != nullptr) {
+				CONTEXT ctx = *static_cast<const CONTEXT*>(info->native_context);
+				std::printf("host stack:\n");
+				for (int frame = 0; frame < 48 && ctx.Rip != 0; frame++) {
+					HMODULE frame_module = nullptr;
+					char    frame_path[MAX_PATH] = "?";
+					if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+					                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+					                       reinterpret_cast<LPCSTR>(ctx.Rip), &frame_module) != 0 &&
+					    frame_module != nullptr) {
+						GetModuleFileNameA(frame_module, frame_path, MAX_PATH);
+					}
+					const char* name = std::strrchr(frame_path, '\\');
+					std::printf("  #%02d %s +0x%" PRIx64 "\n", frame, name != nullptr ? name + 1 : frame_path,
+					            frame_module != nullptr
+					                ? static_cast<uint64_t>(ctx.Rip - reinterpret_cast<uint64_t>(frame_module))
+					                : static_cast<uint64_t>(ctx.Rip));
+					DWORD64 image_base = 0;
+					auto*   function   = RtlLookupFunctionEntry(ctx.Rip, &image_base, nullptr);
+					if (function == nullptr) {
+						// Leaf function: return address is at the top of the stack.
+						if (!IsReadableRange(ctx.Rsp, sizeof(uint64_t))) {
+							break;
+						}
+						ctx.Rip = *reinterpret_cast<const DWORD64*>(ctx.Rsp);
+						ctx.Rsp += 8;
+						continue;
+					}
+					PVOID   handler_data = nullptr;
+					DWORD64 frame_ptr    = 0;
+					RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, ctx.Rip, function, &ctx,
+					                 &handler_data, &frame_ptr, nullptr);
+				}
+			}
 		}
 #endif
 		std::printf("rax=%016" PRIx64 " rbx=%016" PRIx64 " rcx=%016" PRIx64 " rdx=%016" PRIx64 "\n"
