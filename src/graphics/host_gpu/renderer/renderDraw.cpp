@@ -741,6 +741,12 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 	for (uint32_t i = 0; i < merged_count; i++) {
 		auto& range = merged_ranges[i];
 		// PPSA20298
+		if (Libs::LibKernel::Memory::TryClampRangeSize(range.base_address, range.RequestedSize()) ==
+		    0) {
+			std::printf("error: vertex buffer at unmapped address 0x%016" PRIx64 " size=0x%016" PRIx64
+			            "\n",
+			            range.base_address, range.RequestedSize());
+		}
 		const auto size =
 		    Libs::LibKernel::Memory::ClampRangeSize(range.base_address, range.RequestedSize());
 		range.acquired_end = range.base_address + size;
