@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "graphics/shader/shader.h"
 
 #include "common/assert.h"
@@ -80,6 +81,16 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 }
 
 bool ShaderUsesIndirectCalls(uint64_t addr) {
+	// Upstream links small scalar leaf functions called through S_SWAPPC_B64, but exits on
+	// anything larger (e.g. ray-tracing hit shaders). KYTY_SKIP_SWAPPC=0 lets those dispatches
+	// reach the upstream linker; the default skips them so the game keeps running.
+	static const bool skip = [] {
+		const char* env = std::getenv("KYTY_SKIP_SWAPPC");
+		return env == nullptr || env[0] != '0';
+	}();
+	if (!skip) {
+		return false;
+	}
 	static std::mutex                         cache_mutex;
 	static std::unordered_map<uint64_t, bool> cache;
 	{
@@ -93,10 +104,9 @@ bool ShaderUsesIndirectCalls(uint64_t addr) {
                                  entry.data.code_size_bytes / sizeof(uint32_t)};
 	ShaderRecompiler::Decoder::Program program;
 	ShaderRecompiler::Decoder::DecodeProgram(code, program);
-	bool found = false;
+	bool found = program.has_swap_pc;
 	for (const auto& inst: program.instructions) {
-		if (inst.family == ShaderRecompiler::Decoder::Family::SOP1 && inst.opcode_id == 0x21u &&
-		    inst.opcode == ShaderRecompiler::Decoder::Opcode::UNSUPPORTED) {
+		if (inst.family == ShaderRecompiler::Decoder::Family::SOP1 && inst.opcode_id == 0x21u) {
 			found = true;
 			break;
 		}
