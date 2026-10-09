@@ -148,19 +148,34 @@ void RenderContext::PrepareBda() {
 	// Shaders with buffer-device-address access can touch any mapped guest memory, so CPU writes
 	// anywhere must be uploaded first. Skip the full walk when no CPU write (or remap) happened
 	// since the last one; KYTY_BDA_SYNC_ALWAYS=1 restores the unconditional walk.
-	static const bool always = std::getenv("KYTY_BDA_SYNC_ALWAYS") != nullptr;
-	if (always) {
-		m_buffer_cache.MarkCpuDirtyEverything();
-	}
-	// Only the ranges written since the last sync need uploading. Fall back to walking every
-	// mapped range when the dirty list overflowed (or at startup).
+	// KYTY_BDA_SYNC_MODE: 0 = walk every mapped range on every call (safest, slowest),
+	// 1 = full walk only when a CPU write/remap happened since the last sync (default),
+	// 2 = sync only the recorded CPU-dirty ranges (fastest, experimental).
+	// KYTY_BDA_SYNC_ALWAYS=1 is kept as an alias for mode 0.
+	static const int mode = [] {
+		if (std::getenv("KYTY_BDA_SYNC_ALWAYS") != nullptr) return 0;
+		const char* env = std::getenv("KYTY_BDA_SYNC_MODE");
+		return env != nullptr ? std::atoi(env) : 1;
+	}();
 	static thread_local std::vector<std::pair<uint64_t, uint64_t>> dirty;
-	if (m_buffer_cache.TakeCpuDirtyRanges(dirty)) {
+	const auto full_walk = [this] {
 		Common::Perf::Count(Common::Perf::Counter::BdaFullWalk);
 		std::shared_lock lock(m_mapped_ranges_mutex);
 		m_mapped_ranges.ForEach([this](uint64_t start, uint64_t end) {
 			m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
 		});
+	};
+	if (mode != 2) {
+		const auto epoch = m_buffer_cache.CpuWriteEpoch();
+		if (mode == 0 || epoch != m_bda_synced_epoch) {
+			full_walk();
+			m_bda_synced_epoch = epoch;
+		}
+		m_fault_process_pending = true;
+		return;
+	}
+	if (m_buffer_cache.TakeCpuDirtyRanges(dirty)) {
+		full_walk();
 	} else if (!dirty.empty()) {
 		// Ranges may have been unmapped since they were written; only touch what is still mapped.
 		std::shared_lock lock(m_mapped_ranges_mutex);
