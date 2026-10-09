@@ -23,6 +23,7 @@ enum class Counter : uint32_t {
 	ReadScalar,
 	ReadIndirectArgs,
 	ReadInvalidate,
+	SrtRead,
 	Count
 };
 
@@ -159,6 +160,11 @@ inline void OnFlip() {
 			std::printf(" %s=%.0f", name, static_cast<double>(table.ns[i].exchange(0)) / 1e6 / secs);
 		}
 		std::printf("\n");
+	}
+	{
+		const double t_srt = ms(Counter::SrtRead);
+		std::printf("PERF srt_read=%.0fms(%llu)\n", t_srt,
+		            static_cast<unsigned long long>(n(Counter::SrtRead)));
 	}
 	std::printf("PERF readback sources (count/s): cpu_page_fault=%llu texture_metadata=%llu "
 	            "shader_scalar_read=%llu indirect_args=%llu cpu_write_invalidate=%llu\n",

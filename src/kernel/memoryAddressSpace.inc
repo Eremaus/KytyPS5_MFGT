@@ -209,7 +209,30 @@ public:
 			return false;
 		}
 
+		// Fast path: repeated small reads (shader resource tables) usually hit the mapping used
+		// by the previous read on this thread. The backing view itself is never unmapped while the
+		// store exists, so a read that races with a remap returns stale bytes but stays valid.
+		struct LastMapping {
+			const GuestBackingStore* store = nullptr;
+			uint64_t                 generation = 0;
+			uint64_t                 vaddr = 0;
+			uint64_t                 size = 0;
+			uint64_t                 backing_offset = 0;
+		};
+		static const bool fast_reads = [] {
+			const char* env = std::getenv("KYTY_FAST_BACKING_READ");
+			return env == nullptr || env[0] != '0';
+		}();
+		thread_local LastMapping last;
+		if (fast_reads && last.store == this &&
+		    last.generation == m_maps_generation.load(std::memory_order_acquire) &&
+		    vaddr >= last.vaddr && vaddr + size <= last.vaddr + last.size) {
+			std::memcpy(data, m_backing_base + last.backing_offset + (vaddr - last.vaddr), size);
+			return true;
+		}
+
 		std::shared_lock lock(m_mutex);
+		const auto generation = m_maps_generation.load(std::memory_order_acquire);
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 		if (g_test_backing_read != nullptr) {
 			g_test_backing_read(vaddr, size);
@@ -243,6 +266,11 @@ public:
 			const auto  offset = entry.backing_offset + current - entry.vaddr;
 			std::memcpy(destination + (current - vaddr), m_backing_base + offset, bytes);
 			current += bytes;
+		}
+		if (fast_reads && end <= first->second.vaddr + first->second.size &&
+		    RangeOk(first->second.backing_offset, first->second.size)) {
+			last = {this, generation, first->second.vaddr, first->second.size,
+			        first->second.backing_offset};
 		}
 		return true;
 	}
@@ -306,12 +334,14 @@ public:
 
 		{
 			std::lock_guard lock(m_mutex);
+			m_maps_generation.fetch_add(1, std::memory_order_acq_rel);
 			EXIT_IF(!m_maps.emplace(vaddr, MapEntry {vaddr, size, backing_offset, mode}).second);
 		}
 		SetFailure(failure_reason, FailureReason::None);
 		return true;
 #else
 		std::lock_guard lock(m_mutex);
+		m_maps_generation.fetch_add(1, std::memory_order_acq_rel);
 		void* mapped = MapView(vaddr, size, backing_offset, mode, failure_reason);
 		if (mapped == nullptr || reinterpret_cast<uint64_t>(mapped) != vaddr) {
 			return false;
@@ -336,6 +366,7 @@ public:
 		std::vector<MapEntry> targets;
 		{
 			std::lock_guard lock(m_mutex);
+			m_maps_generation.fetch_add(1, std::memory_order_acq_rel);
 			auto            current = vaddr;
 			while (current < end) {
 				MapEntry entry {};
@@ -398,6 +429,7 @@ public:
 		MapEntry old {};
 		{
 			std::lock_guard lock(m_mutex);
+			m_maps_generation.fetch_add(1, std::memory_order_acq_rel);
 			auto            next = m_maps.upper_bound(vaddr);
 			if (next != m_maps.begin()) {
 				auto entry = std::prev(next);
@@ -424,6 +456,7 @@ public:
 			    UnmapViewPreservePlaceholder(reinterpret_cast<void*>(old.vaddr), old.size);
 			if (!unmapped) {
 				std::lock_guard lock(m_mutex);
+				m_maps_generation.fetch_add(1, std::memory_order_acq_rel);
 				m_maps.emplace(old.vaddr, old);
 				return false;
 			}
@@ -468,6 +501,7 @@ public:
 			return false;
 		}
 		std::lock_guard lock(m_mutex);
+		m_maps_generation.fetch_add(1, std::memory_order_acq_rel);
 		m_maps.emplace(old.vaddr, old);
 		return false;
 #else
@@ -478,6 +512,7 @@ public:
 		}
 
 		std::lock_guard lock(m_mutex);
+		m_maps_generation.fetch_add(1, std::memory_order_acq_rel);
 		RemoveMappingsUnlocked(vaddr, size);
 
 		if (placeholder_preserved != nullptr) {
@@ -680,6 +715,7 @@ private:
 	uint64_t                     m_size         = 0;
 	std::shared_mutex            m_mutex;
 	std::map<uint64_t, MapEntry> m_maps;
+	std::atomic<uint64_t>        m_maps_generation {1};
 };
 
 class GuestAddressSpace {

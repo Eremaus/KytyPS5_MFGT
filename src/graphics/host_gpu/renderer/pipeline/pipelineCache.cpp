@@ -109,6 +109,7 @@ void PipelineCacheLog(fmt::format_string<Args...> format, Args&&... args) {
 }
 
 bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) {
+	Common::Perf::Scope perf_scope(Common::Perf::Counter::SrtRead);
 	// Scalar and unformatted buffer dependencies use the same backing as native raw loads.
 	// Image synchronization belongs to formatted buffer bindings, not these reads.
 	return !values.empty() &&
