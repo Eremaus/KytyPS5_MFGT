@@ -18,6 +18,11 @@ enum class Counter : uint32_t {
 	GpuWait,
 	BdaSync,
 	BufferReadback,
+	ReadFault,
+	ReadMetadata,
+	ReadScalar,
+	ReadIndirectArgs,
+	ReadInvalidate,
 	Count
 };
 
@@ -108,6 +113,13 @@ inline void OnFlip() {
 	            static_cast<unsigned long long>(n(Counter::GpuWait)), t_bda,
 	            static_cast<unsigned long long>(n(Counter::BdaSync)), t_read,
 	            static_cast<unsigned long long>(n(Counter::BufferReadback)));
+	std::printf("PERF readback sources (count/s): cpu_page_fault=%llu texture_metadata=%llu "
+	            "shader_scalar_read=%llu indirect_args=%llu cpu_write_invalidate=%llu\n",
+	            static_cast<unsigned long long>(n(Counter::ReadFault)),
+	            static_cast<unsigned long long>(n(Counter::ReadMetadata)),
+	            static_cast<unsigned long long>(n(Counter::ReadScalar)),
+	            static_cast<unsigned long long>(n(Counter::ReadIndirectArgs)),
+	            static_cast<unsigned long long>(n(Counter::ReadInvalidate)));
 	std::fflush(stdout);
 }
 
