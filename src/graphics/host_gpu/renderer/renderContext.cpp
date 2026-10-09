@@ -162,6 +162,13 @@ void RenderContext::PrepareBda() {
 			m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
 		});
 	} else if (!dirty.empty()) {
+		// Ranges may have been unmapped since they were written; only touch what is still mapped.
+		std::shared_lock lock(m_mapped_ranges_mutex);
+		const auto sync = [this](uint64_t start, uint64_t end) {
+			m_mapped_ranges.ForEachInRange(start, end - start, [this](uint64_t begin, uint64_t last) {
+				m_buffer_cache.SynchronizeBuffersInRange(begin, last - begin);
+			});
+		};
 		std::sort(dirty.begin(), dirty.end());
 		uint64_t start = dirty[0].first;
 		uint64_t end   = dirty[0].first + dirty[0].second;
@@ -170,7 +177,7 @@ void RenderContext::PrepareBda() {
 				end = std::max(end, dirty[i].first + dirty[i].second);
 				continue;
 			}
-			m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
+			sync(start, end);
 			if (i < dirty.size()) {
 				start = dirty[i].first;
 				end   = dirty[i].first + dirty[i].second;
