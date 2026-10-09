@@ -11,6 +11,7 @@
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
+#include <atomic>
 #include <map>
 #include <span>
 #include <utility>
@@ -27,6 +28,13 @@ inline constexpr BufferId NULL_BUFFER_ID {0};
 
 class BufferCache {
 public:
+	// Incremented whenever guest memory may have been written by the CPU (or remapped), so
+	// callers can skip whole-address-space synchronisation when nothing changed.
+	[[nodiscard]] uint64_t CpuWriteEpoch() const noexcept {
+		return m_cpu_write_epoch.load(std::memory_order_acquire);
+	}
+	void BumpCpuWriteEpoch() noexcept { m_cpu_write_epoch.fetch_add(1, std::memory_order_acq_rel); }
+
 	static constexpr uint32_t CACHING_PAGEBITS  = 14;
 	static constexpr uint64_t CACHING_PAGESIZE  = uint64_t {1} << CACHING_PAGEBITS;
 	static constexpr uint64_t CACHING_NUMPAGES  = (LOWER_ADDRESS_SIZE + LibKernel::Memory::kExtendedMemorySize) >> CACHING_PAGEBITS;
@@ -141,6 +149,7 @@ private:
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;
 	uint64_t m_critical_gc_memory = 2ull * 1024 * 1024 * 1024;
 	uint64_t m_gc_tick            = 0;
+	std::atomic<uint64_t> m_cpu_write_epoch {1};
 };
 
 } // namespace Libs::Graphics
