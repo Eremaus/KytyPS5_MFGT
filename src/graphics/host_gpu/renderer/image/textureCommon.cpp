@@ -48,6 +48,12 @@ HostFormatInfo ResolveHostFormat(Prospero::BufferFormat guest_format,
 			default: break;
 		}
 	}
+	if (guest_format == Prospero::BufferFormat::k2_10_10_10UNorm) {
+		// Vulkan has no format with the 2-bit component in the low bits. Store it as
+		// A2B10G10R10 with the guest's 2-bit X in host A and Y/Z/W in host R/G/B: precision and
+		// rendering match, only the raw bit order in guest memory differs.
+		return {vk::Format::eA2B10G10R10UnormPack32, Prospero::ColorComponentMapping {0x39u}};
+	}
 	const auto format = VulkanFormat(guest_format);
 	switch (guest_format) {
 		case Prospero::BufferFormat::k5_5_5_1UNorm: return {format, Prospero::ColorMappingBgra};
