@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 
+#include "common/perfStats.h"
 #include "common/assert.h"
 #include "graphics/host_gpu/graphicContext.h"
 
@@ -49,6 +50,7 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	wait_info.pSemaphores    = &m_semaphore;
 	wait_info.pValues        = &tick;
 
+	Common::Perf::Scope perf_scope(Common::Perf::Counter::GpuWait);
 	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 	Refresh();
