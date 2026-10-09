@@ -902,9 +902,7 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 		}
 	}
 	auto& pipeline_cache = buffer.GetContext().GetPipelineCache();
-	if (draw.IsIndexed()) {
-		LogDrawPhase(draw.Name(), "GetGraphicsPrograms");
-	}
+	LogDrawPhase(draw.Name(), "GetGraphicsPrograms");
 	state.programs = pipeline_cache.GetGraphicsPrograms(
 	    vertex_shader_info, pixel_shader_info, shader_regs, ctx, buffer.GetUserConfig(),
 	    target_export_mapping, state.ps_active, state.vertex_info, state.ps_input_info);
@@ -1194,6 +1192,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		ShaderWriteBarrier(vk_buffer, shader_write_stages);
 	}
 	LogDrawPhase(draw.Name(), "DrawComplete");
+	LogDrawPhase(draw.Name(), "OutsideDraws");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
 	}
