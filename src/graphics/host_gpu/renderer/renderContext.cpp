@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 
+#include "common/perfStats.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -128,6 +129,7 @@ void RenderContext::PrepareBda() {
 		Log::WriteToConsoleAndLog("GPU: using buffer device address (BDA) shader memory access.\n");
 		m_bda_logged = true;
 	}
+	Common::Perf::Scope perf_scope(Common::Perf::Counter::BdaSync);
 	std::shared_lock lock(m_mapped_ranges_mutex);
 	m_mapped_ranges.ForEach([this](uint64_t start, uint64_t end) {
 		m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
