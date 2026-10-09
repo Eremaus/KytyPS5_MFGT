@@ -762,7 +762,10 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 	input_info.lds_storage = input_info.lds_size_dwords * 4u >
 	    m_graphics.GetPhysicalDeviceProperties().limits.maxComputeSharedMemorySize;
 	uint32_t          push_data_cursor = 0;
-	return m_program_cache->Get(params, input_info, push_data_cursor);
+	Common::Perf::MarkPhase("CS_ProgramLookup");
+	auto program = m_program_cache->Get(params, input_info, push_data_cursor);
+	Common::Perf::MarkPhase("OutsideDraws");
+	return program;
 }
 
 bool PipelineStaticParameters::operator==(const PipelineStaticParameters& other) const noexcept {
