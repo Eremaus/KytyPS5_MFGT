@@ -1,5 +1,11 @@
 #include "graphics/host_gpu/renderer/image/tiler.h"
 
+#include <spirv-tools/optimizer.hpp>
+
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "gpu_tiler_shaders/gpu_tiler_demote_d16_spv.h"
@@ -240,13 +246,37 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	const uint32_t                   values[] {1u << element_index, direction_index};
 	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}};
 	const vk::SpecializationInfo     specialization {2, entries, sizeof(values), values};
+	// Bake the specialization constants into the module before the driver sees it. AMD's
+	// Windows driver crashes evaluating some spec-constant expressions in these shaders, and a
+	// fully constant module is also cheaper for every driver to compile.
+	std::vector<uint32_t> baked;
+	{
+		spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_3);
+		optimizer.RegisterPass(spvtools::CreateSetSpecConstantDefaultValuePass(
+		    std::unordered_map<uint32_t, std::string> {{0u, std::to_string(values[0])},
+		                                               {1u, std::to_string(values[1])}}));
+		optimizer.RegisterPass(spvtools::CreateFreezeSpecConstantValuePass());
+		optimizer.RegisterPass(spvtools::CreateFoldSpecConstantOpAndCompositePass());
+		optimizer.RegisterPass(spvtools::CreateDeadBranchElimPass());
+		optimizer.RegisterPass(spvtools::CreateAggressiveDCEPass());
+		optimizer.RegisterPass(spvtools::CreateSimplificationPass());
+		optimizer.RegisterPass(spvtools::CreateDeadBranchElimPass());
+		optimizer.RegisterPass(spvtools::CreateBlockMergePass());
+		optimizer.RegisterPass(spvtools::CreateAggressiveDCEPass());
+		if (!optimizer.Run(shaders[family_index].code, shaders[family_index].words, &baked)) {
+			baked.clear();
+		}
+	}
+	const bool use_baked = !baked.empty();
 	const auto module =
-	    CompileSPV({shaders[family_index].code, shaders[family_index].words}, m_graphics.device);
+	    use_baked ? CompileSPV({baked.data(), baked.size()}, m_graphics.device)
+	              : CompileSPV({shaders[family_index].code, shaders[family_index].words},
+	                           m_graphics.device);
 	vk::PipelineShaderStageCreateInfo stage {};
 	stage.stage               = vk::ShaderStageFlagBits::eCompute;
 	stage.module              = module;
 	stage.pName               = "main";
-	stage.pSpecializationInfo = &specialization;
+	stage.pSpecializationInfo = use_baked ? nullptr : &specialization;
 	vk::ComputePipelineCreateInfo create {};
 	create.stage  = stage;
 	create.layout = m_pipeline_layout;
