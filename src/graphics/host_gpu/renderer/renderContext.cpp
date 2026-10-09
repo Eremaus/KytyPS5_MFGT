@@ -7,6 +7,8 @@
 #include "graphics/presentation/videoOut.h"
 #include "libs/errno.h"
 
+#include <cstdio>
+#include <atomic>
 #include <algorithm>
 
 namespace Libs::Graphics {
@@ -66,6 +68,16 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
 	} else {
+		Common::Perf::Scope perf_scope(Common::Perf::Counter::ReadFault);
+		if (Common::Perf::Enabled()) {
+			static std::atomic<uint64_t> fault_count {0};
+			const auto count = fault_count.fetch_add(1, std::memory_order_relaxed);
+			if (count < 16 || count % 2000 == 0) {
+				std::printf("PERF read fault #%llu addr=0x%016llx\n",
+				            static_cast<unsigned long long>(count),
+				            static_cast<unsigned long long>(fault_vaddr));
+			}
+		}
 		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
 	}
 	return true;
