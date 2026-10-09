@@ -18,6 +18,7 @@
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
+#include <array>
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -512,6 +513,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	rendering_info.pColorAttachmentFormats = rendering.color_formats.data();
 	rendering_info.depthAttachmentFormat   = rendering.depth_format;
 	rendering_info.stencilAttachmentFormat = rendering.stencil_format;
+	std::array<vk::SampleCountFlagBits, RENDER_COLOR_ATTACHMENTS_MAX> color_sample_counts {};
+	vk::AttachmentSampleCountInfoAMD sample_count_info {};
+	if (rendering.color_samples != 0) {
+		EXIT_IF(!graphics.mixed_attachment_samples_enabled);
+		color_sample_counts.fill(vulkan_sample_count(rendering.color_samples));
+		sample_count_info.colorAttachmentCount          = rendering.color_count;
+		sample_count_info.pColorAttachmentSamples       = color_sample_counts.data();
+		sample_count_info.depthStencilAttachmentSamples = vulkan_sample_count(static_params.samples);
+		rendering_info.pNext                            = &sample_count_info;
+	}
 	pipeline_info.pNext                    = &rendering_info;
 	pipeline_info.stageCount               = shader_stage_count;
 	pipeline_info.pStages                  = shader_stages;
