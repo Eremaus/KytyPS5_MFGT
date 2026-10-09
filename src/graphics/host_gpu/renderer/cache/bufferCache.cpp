@@ -14,6 +14,8 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "kernel/memory.h"
 
+#include <cstdlib>
+#include <bit>
 #include <algorithm>
 #include <cinttypes>
 #include <cstring>
@@ -289,8 +291,28 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		}
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
 
-		if (DownloadBufferMemory<false>(buffer, vaddr, size)) {
-			m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+		// Every readback costs a full GPU drain, and games tend to touch GPU-written memory page
+		// by page. Download an aligned window around the request so neighbouring pages are
+		// already coherent and do not fault (and drain the GPU) again.
+		static const uint64_t window = [] {
+			const char* value = std::getenv("KYTY_READBACK_WINDOW");
+			return value != nullptr ? static_cast<uint64_t>(std::strtoull(value, nullptr, 0))
+			                        : uint64_t {2} * 1024 * 1024;
+		}();
+		uint64_t download_addr = vaddr;
+		uint64_t download_size = size;
+		if (window != 0 && std::has_single_bit(window)) {
+			const auto buffer_begin = buffer.CpuAddress();
+			const auto buffer_end   = buffer_begin + buffer.Size();
+			const auto begin = std::max(buffer_begin, vaddr & ~(window - 1));
+			const auto end   = std::min(buffer_end, (vaddr + size + window - 1) & ~(window - 1));
+			if (begin <= vaddr && vaddr + size <= end) {
+				download_addr = begin;
+				download_size = end - begin;
+			}
+		}
+		if (DownloadBufferMemory<false>(buffer, download_addr, download_size)) {
+			m_memory_tracker.UnmarkRegionAsGpuModified(download_addr, download_size);
 		}
 		if (is_write) {
 			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
