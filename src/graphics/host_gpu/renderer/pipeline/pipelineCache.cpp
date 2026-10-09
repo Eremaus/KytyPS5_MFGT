@@ -79,8 +79,12 @@ std::string DriverCacheSignature(const vk::PhysicalDeviceProperties& properties)
 		uuid[i * 2]     = hex[properties.pipelineCacheUUID[i] >> 4u];
 		uuid[i * 2 + 1] = hex[properties.pipelineCacheUUID[i] & 0xfu];
 	}
-	return fmt::format("KytyPC1:{}:{:08x}:{:08x}:{:08x}:{}\n", KYTY_GIT_REVISION,
-	                   properties.vendorID, properties.deviceID, properties.driverVersion, uuid);
+	// The driver validates its own blob (pipelineCacheUUID) and keys entries by full pipeline
+	// state, so a cache from another emulator build is safe to reuse: pipelines whose SPIR-V
+	// changed simply miss. Keeping it across builds avoids recompiling every pipeline after an
+	// emulator update.
+	return fmt::format("KytyPC2:{:08x}:{:08x}:{:08x}:{}\n", properties.vendorID,
+	                   properties.deviceID, properties.driverVersion, uuid);
 }
 
 std::string PipelineCacheTitleId() {
