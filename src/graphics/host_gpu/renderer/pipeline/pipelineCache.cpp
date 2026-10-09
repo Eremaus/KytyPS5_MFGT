@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
+#include "common/perfStats.h"
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -368,6 +369,7 @@ struct PipelineCache::ProgramCache {
 			options.wave_size = input_info.wave_size;
 		}
 		DumpShaderOriginal(stage_name, options.shader_hash, params.code);
+		Common::Perf::Scope perf_scope(Common::Perf::Counter::ShaderTranslate);
 		auto translated = ShaderRecompiler::TranslateProgram(params.code, options);
 		if (entry == programs.end()) {
 			entry = programs.try_emplace(lookup_key,

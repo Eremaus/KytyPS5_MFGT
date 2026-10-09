@@ -1,5 +1,6 @@
 #include "graphics/presentation/videoOut.h"
 
+#include "common/perfStats.h"
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -1621,6 +1622,7 @@ void VideoOutDriver::PrepareFlip(uint64_t request_id, Graphics::CommandBuffer& b
 }
 
 void VideoOutDriver::CompleteFlip(uint64_t request_id) {
+	Common::Perf::OnFlip();
 	m_impl->GetFlipQueue().Complete(request_id);
 }
 

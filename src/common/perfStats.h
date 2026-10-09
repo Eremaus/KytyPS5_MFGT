@@ -1,0 +1,116 @@
+#ifndef EMULATOR_INCLUDE_COMMON_PERF_STATS_H_
+#define EMULATOR_INCLUDE_COMMON_PERF_STATS_H_
+
+// Lightweight per-second performance meter, enabled with the KYTY_PERF environment variable.
+// Prints one line per second to stdout with time spent in the main host-side cost centres.
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+
+namespace Common::Perf {
+
+enum class Counter : uint32_t {
+	ShaderTranslate,
+	PipelineCreate,
+	GpuWait,
+	BdaSync,
+	BufferReadback,
+	Count
+};
+
+struct State {
+	std::atomic<uint64_t> ns[static_cast<uint32_t>(Counter::Count)] {};
+	std::atomic<uint64_t> calls[static_cast<uint32_t>(Counter::Count)] {};
+	std::atomic<uint64_t> flips {0};
+	std::atomic<uint64_t> draws {0};
+	std::atomic<uint64_t> dispatches {0};
+	std::atomic<int64_t>  last_report_ns {0};
+};
+
+inline State& GetState() {
+	static State state;
+	return state;
+}
+
+inline bool Enabled() {
+	static const bool enabled = std::getenv("KYTY_PERF") != nullptr;
+	return enabled;
+}
+
+inline int64_t NowNs() {
+	return std::chrono::duration_cast<std::chrono::nanoseconds>(
+	           std::chrono::steady_clock::now().time_since_epoch())
+	    .count();
+}
+
+class Scope {
+public:
+	explicit Scope(Counter counter): m_counter(counter), m_start(Enabled() ? NowNs() : 0) {}
+	~Scope() {
+		if (m_start != 0) {
+			auto& state = GetState();
+			state.ns[static_cast<uint32_t>(m_counter)] += static_cast<uint64_t>(NowNs() - m_start);
+			state.calls[static_cast<uint32_t>(m_counter)]++;
+		}
+	}
+	Scope(const Scope&)            = delete;
+	Scope& operator=(const Scope&) = delete;
+
+private:
+	Counter m_counter;
+	int64_t m_start;
+};
+
+inline void CountDraw() {
+	if (Enabled()) GetState().draws++;
+}
+inline void CountDispatch() {
+	if (Enabled()) GetState().dispatches++;
+}
+
+// Call once per presented frame; prints and resets the counters about once per second.
+inline void OnFlip() {
+	if (!Enabled()) {
+		return;
+	}
+	auto&      state = GetState();
+	const auto now   = NowNs();
+	state.flips++;
+	auto last = state.last_report_ns.load();
+	if (last == 0) {
+		state.last_report_ns = now;
+		return;
+	}
+	if (now - last < 1000000000 || !state.last_report_ns.compare_exchange_strong(last, now)) {
+		return;
+	}
+	const double secs = static_cast<double>(now - last) / 1e9;
+	auto ms = [&](Counter c) {
+		return static_cast<double>(state.ns[static_cast<uint32_t>(c)].exchange(0)) / 1e6 / secs;
+	};
+	auto n = [&](Counter c) { return state.calls[static_cast<uint32_t>(c)].exchange(0); };
+	const auto flips = state.flips.exchange(0);
+	const auto draws = state.draws.exchange(0);
+	const auto disp  = state.dispatches.exchange(0);
+	const double t_shader = ms(Counter::ShaderTranslate), t_pipe = ms(Counter::PipelineCreate),
+	             t_wait = ms(Counter::GpuWait), t_bda = ms(Counter::BdaSync),
+	             t_read = ms(Counter::BufferReadback);
+	std::printf("PERF fps=%.1f draws/s=%.0f dispatches/s=%.0f | per second (ms): "
+	            "shader_translate=%.0f(%llu) pipeline_create=%.0f(%llu) gpu_wait=%.0f(%llu) "
+	            "bda_sync=%.0f(%llu) buffer_readback=%.0f(%llu)\n",
+	            static_cast<double>(flips) / secs, static_cast<double>(draws) / secs,
+	            static_cast<double>(disp) / secs, t_shader,
+	            static_cast<unsigned long long>(n(Counter::ShaderTranslate)), t_pipe,
+	            static_cast<unsigned long long>(n(Counter::PipelineCreate)), t_wait,
+	            static_cast<unsigned long long>(n(Counter::GpuWait)), t_bda,
+	            static_cast<unsigned long long>(n(Counter::BdaSync)), t_read,
+	            static_cast<unsigned long long>(n(Counter::BufferReadback)));
+	std::fflush(stdout);
+}
+
+} // namespace Common::Perf
+
+#endif
