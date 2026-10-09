@@ -1,6 +1,10 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_BUFFERCACHE_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_BUFFERCACHE_H_
 
+#include <mutex>
+#include <utility>
+#include <vector>
+
 #include "common/abi.h"
 #include "common/common.h"
 #include "common/lruCache.h"
@@ -34,6 +38,11 @@ public:
 		return m_cpu_write_epoch.load(std::memory_order_acquire);
 	}
 	void BumpCpuWriteEpoch() noexcept { m_cpu_write_epoch.fetch_add(1, std::memory_order_acq_rel); }
+	// Ranges the CPU may have written since the last TakeCpuDirtyRanges(). `everything` is set
+	// when the list overflowed or memory was remapped, in which case callers must walk all of it.
+	void MarkCpuDirty(uint64_t vaddr, uint64_t size);
+	void MarkCpuDirtyEverything();
+	bool TakeCpuDirtyRanges(std::vector<std::pair<uint64_t, uint64_t>>& out);
 
 	static constexpr uint32_t CACHING_PAGEBITS  = 14;
 	static constexpr uint64_t CACHING_PAGESIZE  = uint64_t {1} << CACHING_PAGEBITS;
@@ -150,6 +159,9 @@ private:
 	uint64_t m_critical_gc_memory = 2ull * 1024 * 1024 * 1024;
 	uint64_t m_gc_tick            = 0;
 	std::atomic<uint64_t> m_cpu_write_epoch {1};
+	std::mutex                                   m_cpu_dirty_mutex;
+	std::vector<std::pair<uint64_t, uint64_t>>  m_cpu_dirty_ranges;
+	bool                                         m_cpu_dirty_everything = true;
 };
 
 } // namespace Libs::Graphics

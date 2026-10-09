@@ -863,7 +863,7 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 					            " size=0x%016" PRIx64 "; binding null buffer\n",
 					            address, size);
 				}
-				prepared.buffer_sources.push_back({});
+				source = {};
 				continue;
 			}
 			size = Libs::LibKernel::Memory::ClampRangeSize(address, size);

@@ -103,6 +103,7 @@ bool RenderContext::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
 
 void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 	m_buffer_cache.BumpCpuWriteEpoch();
+	m_buffer_cache.MarkCpuDirty(vaddr, size);
 	std::lock_guard lock(m_mapped_ranges_mutex);
 	m_mapped_ranges.Add(vaddr, size);
 }
@@ -148,16 +149,34 @@ void RenderContext::PrepareBda() {
 	// anywhere must be uploaded first. Skip the full walk when no CPU write (or remap) happened
 	// since the last one; KYTY_BDA_SYNC_ALWAYS=1 restores the unconditional walk.
 	static const bool always = std::getenv("KYTY_BDA_SYNC_ALWAYS") != nullptr;
-	const auto epoch = m_buffer_cache.CpuWriteEpoch();
-	if (!always && epoch == m_bda_synced_epoch) {
-		m_fault_process_pending = true;
-		return;
+	if (always) {
+		m_buffer_cache.MarkCpuDirtyEverything();
 	}
-	std::shared_lock lock(m_mapped_ranges_mutex);
-	m_mapped_ranges.ForEach([this](uint64_t start, uint64_t end) {
-		m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
-	});
-	m_bda_synced_epoch = epoch;
+	// Only the ranges written since the last sync need uploading. Fall back to walking every
+	// mapped range when the dirty list overflowed (or at startup).
+	static thread_local std::vector<std::pair<uint64_t, uint64_t>> dirty;
+	if (m_buffer_cache.TakeCpuDirtyRanges(dirty)) {
+		Common::Perf::Count(Common::Perf::Counter::BdaFullWalk);
+		std::shared_lock lock(m_mapped_ranges_mutex);
+		m_mapped_ranges.ForEach([this](uint64_t start, uint64_t end) {
+			m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
+		});
+	} else if (!dirty.empty()) {
+		std::sort(dirty.begin(), dirty.end());
+		uint64_t start = dirty[0].first;
+		uint64_t end   = dirty[0].first + dirty[0].second;
+		for (size_t i = 1; i <= dirty.size(); ++i) {
+			if (i < dirty.size() && dirty[i].first <= end) {
+				end = std::max(end, dirty[i].first + dirty[i].second);
+				continue;
+			}
+			m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
+			if (i < dirty.size()) {
+				start = dirty[i].first;
+				end   = dirty[i].first + dirty[i].second;
+			}
+		}
+	}
 	m_fault_process_pending = true;
 }
 
