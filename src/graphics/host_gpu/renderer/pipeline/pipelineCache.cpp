@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
 #include <limits>
@@ -114,6 +115,87 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 	// Image synchronization belongs to formatted buffer bindings, not these reads.
 	return !values.empty() &&
 	       Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes());
+}
+
+// Resource materialisation is a pure function of the shader's user data, its base address, the
+// workgroup counts and the guest memory it reads. Recording those reads lets a later draw with
+// the same inputs reuse the result after re-checking only the memory it depends on.
+struct MaterializeRead {
+	uint64_t address = 0;
+	uint32_t offset  = 0;
+	uint32_t count   = 0;
+	bool     strict  = false;
+};
+
+struct MaterializeRecorder {
+	std::vector<MaterializeRead>* reads = nullptr;
+	std::vector<uint32_t>*        data  = nullptr;
+	void Append(uint64_t address, std::span<const uint32_t> values, bool strict) {
+		reads->push_back({address, static_cast<uint32_t>(data->size()),
+		                  static_cast<uint32_t>(values.size()), strict});
+		data->insert(data->end(), values.begin(), values.end());
+	}
+};
+
+bool RecordStrictRead(void* userdata, uint64_t address, std::span<uint32_t> values) {
+	if (!ReadShaderGuestMemory(nullptr, address, values)) {
+		return false;
+	}
+	static_cast<MaterializeRecorder*>(userdata)->Append(address, values, true);
+	return true;
+}
+
+bool RecordOrdinaryRead(void* userdata, uint64_t address, std::span<uint32_t> values) {
+	// Same behaviour as the walker's default for ordinary scalar reads: a direct guest load.
+	std::memcpy(values.data(), reinterpret_cast<const void*>(address), values.size_bytes());
+	static_cast<MaterializeRecorder*>(userdata)->Append(address, values, false);
+	return true;
+}
+
+struct MaterializeMemo {
+	bool                                         valid       = false;
+	uint64_t                                     shader_base = 0;
+	std::vector<uint32_t>                        user_data;
+	std::vector<uint32_t>                        workgroup_counts;
+	std::vector<MaterializeRead>                 reads;
+	std::vector<uint32_t>                        data;
+	ShaderRecompiler::IR::ResourceSnapshot       resources;
+	ShaderRecompiler::IR::ResourceSpecialization specialization;
+
+	[[nodiscard]] bool Matches(const ShaderRecompiler::IR::SrtRuntime& runtime) const {
+		if (!valid || shader_base != runtime.shader_base ||
+		    !std::ranges::equal(user_data, runtime.user_data) ||
+		    !std::ranges::equal(workgroup_counts, runtime.workgroup_counts)) {
+			return false;
+		}
+		thread_local std::vector<uint32_t> current;
+		for (const auto& read: reads) {
+			current.resize(read.count);
+			if (read.strict) {
+				if (!ReadShaderGuestMemory(nullptr, read.address, current)) {
+					return false;
+				}
+			} else {
+				std::memcpy(current.data(), reinterpret_cast<const void*>(read.address),
+				            read.count * sizeof(uint32_t));
+			}
+			if (std::memcmp(current.data(), data.data() + read.offset,
+			                read.count * sizeof(uint32_t)) != 0) {
+				return false;
+			}
+		}
+		return true;
+	}
+};
+
+constexpr size_t MaterializeMemoSlots = 8;
+
+bool MaterializeMemoEnabled() {
+	static const bool enabled = [] {
+		const char* env = std::getenv("KYTY_MATERIALIZE_MEMO");
+		return env == nullptr || env[0] != '0';
+	}();
+	return enabled;
 }
 
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
@@ -238,6 +320,46 @@ struct PipelineCache::ProgramCache {
 		ShaderRecompiler::IR::ResourceSnapshot       resources;
 		ShaderRecompiler::IR::ResourceSpecialization specialization;
 		std::vector<Permutation>                    permutations;
+		std::array<MaterializeMemo, MaterializeMemoSlots> memo;
+		size_t                                       memo_next = 0;
+
+		// Fills resources/specialization for this draw, reusing a recorded result when the
+		// inputs and every guest word it read are unchanged.
+		void Materialize(const ShaderRecompiler::IR::SrtRuntime& runtime) {
+			if (!MaterializeMemoEnabled()) {
+				EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(resource_plan, runtime, resources,
+				                                                    specialization));
+				return;
+			}
+			for (const auto& slot: memo) {
+				if (slot.Matches(runtime)) {
+					Common::Perf::Count(Common::Perf::Counter::MemoHit);
+					resources      = slot.resources;
+					specialization = slot.specialization;
+					return;
+				}
+			}
+			Common::Perf::Count(Common::Perf::Counter::MemoMiss);
+			auto& slot = memo[memo_next];
+			memo_next  = (memo_next + 1) % memo.size();
+			slot.valid = false;
+			slot.reads.clear();
+			slot.data.clear();
+			MaterializeRecorder recorder {&slot.reads, &slot.data};
+			auto recording = runtime;
+			recording.userdata                   = &recorder;
+			recording.read_specialization_memory = RecordStrictRead;
+			recording.read_memory                = RecordOrdinaryRead;
+			EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(resource_plan, recording, resources,
+			                                                    specialization));
+			slot.shader_base = runtime.shader_base;
+			slot.user_data.assign(runtime.user_data.begin(), runtime.user_data.end());
+			slot.workgroup_counts.assign(runtime.workgroup_counts.begin(),
+			                             runtime.workgroup_counts.end());
+			slot.resources      = resources;
+			slot.specialization = specialization;
+			slot.valid          = true;
+		}
 	};
 
 	struct ProgramKeyHash {
@@ -316,9 +438,7 @@ struct PipelineCache::ProgramCache {
 		}
 		if (entry != programs.end()) {
 			Common::Perf::MarkPhase("GP_MaterializeResources");
-			EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
-			    entry->second.resource_plan, runtime, entry->second.resources,
-			    entry->second.specialization));
+			entry->second.Materialize(runtime);
 			Common::Perf::MarkPhase("GP_PermutationMatch");
 			if (const auto permutation = std::ranges::find_if(
 			        entry->second.permutations, [&](const Permutation& candidate) {

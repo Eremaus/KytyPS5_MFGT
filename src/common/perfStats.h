@@ -24,6 +24,8 @@ enum class Counter : uint32_t {
 	ReadIndirectArgs,
 	ReadInvalidate,
 	SrtRead,
+	MemoHit,
+	MemoMiss,
 	Count
 };
 
@@ -107,6 +109,10 @@ inline void MarkPhase(const char* name) {
 	last_phase = name;
 }
 
+inline void Count(Counter counter) {
+	if (Enabled()) GetState().calls[static_cast<uint32_t>(counter)]++;
+}
+
 inline void CountDraw() {
 	if (Enabled()) GetState().draws++;
 }
@@ -163,8 +169,10 @@ inline void OnFlip() {
 	}
 	{
 		const double t_srt = ms(Counter::SrtRead);
-		std::printf("PERF srt_read=%.0fms(%llu)\n", t_srt,
-		            static_cast<unsigned long long>(n(Counter::SrtRead)));
+		std::printf("PERF srt_read=%.0fms(%llu) materialize_memo hit=%llu miss=%llu\n", t_srt,
+		            static_cast<unsigned long long>(n(Counter::SrtRead)),
+		            static_cast<unsigned long long>(n(Counter::MemoHit)),
+		            static_cast<unsigned long long>(n(Counter::MemoMiss)));
 	}
 	std::printf("PERF readback sources (count/s): cpu_page_fault=%llu texture_metadata=%llu "
 	            "shader_scalar_read=%llu indirect_args=%llu cpu_write_invalidate=%llu\n",
