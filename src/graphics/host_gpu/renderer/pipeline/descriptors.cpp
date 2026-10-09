@@ -31,6 +31,8 @@
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 
+#include <cinttypes>
+#include <cstdio>
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -851,6 +853,23 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 					                   (graphics.StorageMinAlignment() - 1);
 					size = std::min({size, uint64_t {256} * 1024 * 1024, limit});
 				}
+			}
+			const auto clamped = Libs::LibKernel::Memory::TryClampRangeSize(address, size);
+			if (clamped == 0) {
+				// The descriptor points at unmapped guest memory (seen when a game leaves a stale
+				// descriptor bound for a resource the shader does not touch). Bind the null buffer
+				// instead of terminating; reads return zero and writes are dropped.
+				static std::atomic_uint warned = 0;
+				if (warned.fetch_add(1, std::memory_order_relaxed) < 8) {
+					LOGF("warning: buffer descriptor at unmapped address 0x%016" PRIx64
+					     " size=0x%016" PRIx64 "; binding null buffer\n",
+					     address, size);
+					std::printf("warning: buffer descriptor at unmapped address 0x%016" PRIx64
+					            " size=0x%016" PRIx64 "; binding null buffer\n",
+					            address, size);
+				}
+				prepared.buffer_sources.push_back({});
+				continue;
 			}
 			size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
 			prepared.buffer_sources.push_back({address, size, cache.FindBuffer(address, size)});
