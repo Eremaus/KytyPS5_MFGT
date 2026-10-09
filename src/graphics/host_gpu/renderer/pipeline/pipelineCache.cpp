@@ -865,8 +865,15 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 		if (attachment_samples == 0) {
 			attachment_samples = depth.desc.info.samples;
 		} else if (attachment_samples != depth.desc.info.samples) {
-			EXIT("mixed color/depth sample counts are unsupported: %u and %u\n", attachment_samples,
-			     depth.desc.info.samples);
+			if (m_graphics.mixed_attachment_samples_enabled &&
+			    attachment_samples < depth.desc.info.samples) {
+				// Color stores fewer samples than depth (EQAA-style). Rasterize at the depth rate.
+				rendering.color_samples = attachment_samples;
+				attachment_samples      = depth.desc.info.samples;
+			} else {
+				EXIT("mixed color/depth sample counts are unsupported: %u and %u\n",
+				     attachment_samples, depth.desc.info.samples);
+			}
 		}
 	}
 	if (color_count == 0 && !with_depth) {
