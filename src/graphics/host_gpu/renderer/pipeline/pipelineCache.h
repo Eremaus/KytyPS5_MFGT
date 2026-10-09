@@ -68,6 +68,8 @@ struct PipelineRenderingState {
 	vk::Format                                           depth_format   = vk::Format::eUndefined;
 	vk::Format                                           stencil_format = vk::Format::eUndefined;
 	uint32_t                                             color_count    = 0;
+	// Non-zero when color attachments use fewer samples than depth (AMD mixed samples).
+	uint32_t                                             color_samples  = 0;
 
 	bool operator==(const PipelineRenderingState&) const = default;
 };
