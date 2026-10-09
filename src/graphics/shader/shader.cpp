@@ -79,6 +79,33 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	EXIT("%s shader=0x%016" PRIx64 " is missing from ShaderMap\n", label, addr);
 }
 
+bool ShaderUsesIndirectCalls(uint64_t addr) {
+	static std::mutex                         cache_mutex;
+	static std::unordered_map<uint64_t, bool> cache;
+	{
+		std::scoped_lock lock(cache_mutex);
+		if (const auto it = cache.find(addr); it != cache.end()) {
+			return it->second;
+		}
+	}
+	const auto entry = ShaderGetMappedData(addr, "ShaderUsesIndirectCalls");
+	const auto code  = std::span {reinterpret_cast<const uint32_t*>(addr),
+                                 entry.data.code_size_bytes / sizeof(uint32_t)};
+	ShaderRecompiler::Decoder::Program program;
+	ShaderRecompiler::Decoder::DecodeProgram(code, program);
+	bool found = false;
+	for (const auto& inst: program.instructions) {
+		if (inst.family == ShaderRecompiler::Decoder::Family::SOP1 && inst.opcode_id == 0x21u &&
+		    inst.opcode == ShaderRecompiler::Decoder::Opcode::UNSUPPORTED) {
+			found = true;
+			break;
+		}
+	}
+	std::scoped_lock lock(cache_mutex);
+	cache[addr] = found;
+	return found;
+}
+
 static ShaderParams GetShaderParams(uint64_t shader_addr, uint64_t hash,
 	                                std::span<const uint32_t> user_data,
 	                                const ShaderMappedData& data, uint32_t user_data_base = 0) {

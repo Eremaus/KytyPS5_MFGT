@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/shader.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
@@ -26,6 +27,8 @@
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 
+#include <cstdio>
+#include <cinttypes>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -259,6 +262,17 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (sh_ctx.GetCs().cs_regs.data_addr == 0) {
 		return;
 	}
+	if (ShaderUsesIndirectCalls(sh_ctx.GetCs().cs_regs.data_addr)) {
+		// Ray-tracing style shaders call hit functions through pointers loaded from memory.
+		// The static recompiler cannot follow them yet, so skip the dispatch instead of exiting.
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			std::printf("warning: skipping compute dispatch with indirect function calls, "
+			            "shader=0x%016" PRIx64 "\n",
+			            static_cast<uint64_t>(sh_ctx.GetCs().cs_regs.data_addr));
+		}
+		return;
+	}
 
 	constexpr uint32_t DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS = 1u << 5u;
 	constexpr uint32_t DISPATCH_INITIATOR_BASE_BITS             = 0x41u;
@@ -448,6 +462,17 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	Common::LockGuard lock(m_context.GetMutex());
 	const auto& cs_regs = buffer.GetShaders().GetCs();
 	if (cs_regs.cs_regs.data_addr == 0) {
+		return;
+	}
+	if (ShaderUsesIndirectCalls(cs_regs.cs_regs.data_addr)) {
+		// Ray-tracing style shaders call hit functions through pointers loaded from memory.
+		// The static recompiler cannot follow them yet, so skip the dispatch instead of exiting.
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
+			std::printf("warning: skipping compute dispatch with indirect function calls, "
+			            "shader=0x%016" PRIx64 "\n",
+			            static_cast<uint64_t>(cs_regs.cs_regs.data_addr));
+		}
 		return;
 	}
 	ShaderComputeInputInfo input_info {};
