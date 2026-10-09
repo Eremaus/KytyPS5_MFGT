@@ -69,6 +69,43 @@ private:
 	int64_t m_start;
 };
 
+// Phase timing for the draw path: each call charges the time since the previous call (on the
+// same thread) to the previous phase. Phase names must be string literals.
+struct PhaseTable {
+	static constexpr uint32_t Max = 16;
+	std::atomic<const char*>  names[Max] {};
+	std::atomic<uint64_t>     ns[Max] {};
+};
+inline PhaseTable& GetPhases() {
+	static PhaseTable table;
+	return table;
+}
+inline uint32_t PhaseIndex(const char* name) {
+	auto& table = GetPhases();
+	for (uint32_t i = 0; i < PhaseTable::Max; i++) {
+		const char* current = table.names[i].load(std::memory_order_acquire);
+		if (current == name) return i;
+		if (current == nullptr) {
+			const char* expected = nullptr;
+			if (table.names[i].compare_exchange_strong(expected, name) || expected == name) {
+				return i;
+			}
+		}
+	}
+	return PhaseTable::Max - 1;
+}
+inline void MarkPhase(const char* name) {
+	if (!Enabled()) return;
+	thread_local int64_t     last_ns    = 0;
+	thread_local const char* last_phase = nullptr;
+	const auto now = NowNs();
+	if (last_phase != nullptr && last_ns != 0) {
+		GetPhases().ns[PhaseIndex(last_phase)] += static_cast<uint64_t>(now - last_ns);
+	}
+	last_ns    = now;
+	last_phase = name;
+}
+
 inline void CountDraw() {
 	if (Enabled()) GetState().draws++;
 }
@@ -113,6 +150,16 @@ inline void OnFlip() {
 	            static_cast<unsigned long long>(n(Counter::GpuWait)), t_bda,
 	            static_cast<unsigned long long>(n(Counter::BdaSync)), t_read,
 	            static_cast<unsigned long long>(n(Counter::BufferReadback)));
+	{
+		auto& table = GetPhases();
+		std::printf("PERF draw phases (ms/s):");
+		for (uint32_t i = 0; i < PhaseTable::Max; i++) {
+			const char* name = table.names[i].load();
+			if (name == nullptr) break;
+			std::printf(" %s=%.0f", name, static_cast<double>(table.ns[i].exchange(0)) / 1e6 / secs);
+		}
+		std::printf("\n");
+	}
 	std::printf("PERF readback sources (count/s): cpu_page_fault=%llu texture_metadata=%llu "
 	            "shader_scalar_read=%llu indirect_args=%llu cpu_write_invalidate=%llu\n",
 	            static_cast<unsigned long long>(n(Counter::ReadFault)),
