@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/debug.h"
 
+#include "common/perfStats.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -604,6 +605,7 @@ static void AaCheck(const HW::AaSampleControl& c, const HW::AaConfig& cf) {
 }
 
 void LogDrawPhase(const char* draw_name, const char* phase) {
+	Common::Perf::MarkPhase(phase);
 	if (graphics_debug_dump_enabled()) {
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 1024) {
