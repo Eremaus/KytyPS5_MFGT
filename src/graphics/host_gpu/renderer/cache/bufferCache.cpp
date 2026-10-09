@@ -268,8 +268,44 @@ BufferCache::~BufferCache() {
 	m_buffers.clear();
 }
 
+void BufferCache::MarkCpuDirty(uint64_t vaddr, uint64_t size) {
+	constexpr size_t MAX_RANGES = 4096;
+	std::scoped_lock lock(m_cpu_dirty_mutex);
+	if (m_cpu_dirty_everything) return;
+	if (!m_cpu_dirty_ranges.empty()) {
+		auto& last = m_cpu_dirty_ranges.back();
+		if (vaddr >= last.first && vaddr + size <= last.first + last.second) return;
+		if (vaddr == last.first + last.second) {
+			last.second += size;
+			return;
+		}
+	}
+	if (m_cpu_dirty_ranges.size() >= MAX_RANGES) {
+		m_cpu_dirty_everything = true;
+		m_cpu_dirty_ranges.clear();
+		return;
+	}
+	m_cpu_dirty_ranges.emplace_back(vaddr, size);
+}
+
+void BufferCache::MarkCpuDirtyEverything() {
+	std::scoped_lock lock(m_cpu_dirty_mutex);
+	m_cpu_dirty_everything = true;
+	m_cpu_dirty_ranges.clear();
+}
+
+bool BufferCache::TakeCpuDirtyRanges(std::vector<std::pair<uint64_t, uint64_t>>& out) {
+	out.clear();
+	std::scoped_lock lock(m_cpu_dirty_mutex);
+	const bool everything = m_cpu_dirty_everything;
+	m_cpu_dirty_everything = false;
+	out.swap(m_cpu_dirty_ranges);
+	return everything;
+}
+
 void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	BumpCpuWriteEpoch();
+	MarkCpuDirty(vaddr, size);
 	if (!GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: invalid memory-invalidation range\n");
 	}

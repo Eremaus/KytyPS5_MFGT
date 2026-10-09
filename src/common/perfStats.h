@@ -23,6 +23,7 @@ enum class Counter : uint32_t {
 	ReadScalar,
 	ReadIndirectArgs,
 	ReadInvalidate,
+	BdaFullWalk,
 	Count
 };
 
@@ -106,6 +107,10 @@ inline void MarkPhase(const char* name) {
 	last_phase = name;
 }
 
+inline void Count(Counter counter) {
+	if (Enabled()) GetState().calls[static_cast<uint32_t>(counter)]++;
+}
+
 inline void CountDraw() {
 	if (Enabled()) GetState().draws++;
 }
@@ -161,12 +166,14 @@ inline void OnFlip() {
 		std::printf("\n");
 	}
 	std::printf("PERF readback sources (count/s): cpu_page_fault=%llu texture_metadata=%llu "
-	            "shader_scalar_read=%llu indirect_args=%llu cpu_write_invalidate=%llu\n",
+	            "shader_scalar_read=%llu indirect_args=%llu cpu_write_invalidate=%llu "
+	            "bda_full_walks=%llu\n",
 	            static_cast<unsigned long long>(n(Counter::ReadFault)),
 	            static_cast<unsigned long long>(n(Counter::ReadMetadata)),
 	            static_cast<unsigned long long>(n(Counter::ReadScalar)),
 	            static_cast<unsigned long long>(n(Counter::ReadIndirectArgs)),
-	            static_cast<unsigned long long>(n(Counter::ReadInvalidate)));
+	            static_cast<unsigned long long>(n(Counter::ReadInvalidate)),
+	            static_cast<unsigned long long>(n(Counter::BdaFullWalk)));
 	std::fflush(stdout);
 }
 
