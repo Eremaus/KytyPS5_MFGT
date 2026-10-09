@@ -457,6 +457,9 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 		JoinOverlap(id, old_id, !overlap.has_stream_leap);
 	}
 	Register(id);
+	// Pages under a new buffer may have been written while untracked (after an older buffer
+	// was retired), without any fault; make the next BDA sync upload them.
+	MarkCpuDirty(overlap.begin, overlap.end - overlap.begin);
 	return id;
 }
 
