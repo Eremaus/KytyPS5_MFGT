@@ -100,6 +100,8 @@ struct SubmitInfo {
 	}
 };
 
+void ReportGpuBreadcrumbs();
+
 class CommandBuffer {
 public:
 	~CommandBuffer() = default;

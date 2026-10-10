@@ -3,6 +3,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/render.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -425,6 +426,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	if (result != vk::Result::eSuccess) {
 		if (result == vk::Result::eErrorDeviceLost) {
 			ReportDeviceFault(graphics);
+			ReportGpuBreadcrumbs();
 		}
 		ReportVulkanFatal("vkQueueSubmit", result, tick, m_command.m_debug_op,
 		                  m_command.m_debug_submit_id, m_command.m_debug_arg0,

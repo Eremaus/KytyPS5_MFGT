@@ -12,9 +12,109 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 namespace Libs::Graphics {
+
+namespace {
+
+// GPU breadcrumbs (KYTY_GPU_BREADCRUMBS=1, needs VK_AMD_buffer_marker): before every recorded
+// draw/dispatch, write "started N" at the top of the pipe and "finished N-1" at the bottom of the
+// pipe into host-visible memory. After a device loss the two values identify the operation the GPU
+// was executing.
+struct BreadcrumbRecord {
+	uint32_t op     = 0;
+	uint64_t submit = 0;
+	uint32_t arg0 = 0, arg1 = 0, arg2 = 0, arg3 = 0;
+	uint64_t arg4 = 0;
+};
+
+struct Breadcrumbs {
+	std::mutex                          mutex;
+	bool                                initialized = false;
+	bool                                enabled     = false;
+	vk::Device                          device      = nullptr;
+	vk::Buffer                          buffer      = nullptr;
+	vk::DeviceMemory                    memory      = nullptr;
+	volatile uint32_t*                  values      = nullptr;
+	uint32_t                            sequence    = 0;
+	std::array<BreadcrumbRecord, 8192>  ring {};
+};
+
+Breadcrumbs g_breadcrumbs;
+
+bool InitBreadcrumbs(GraphicContext& graphics) {
+	auto& b = g_breadcrumbs;
+	if (b.initialized) return b.enabled;
+	b.initialized = true;
+	const char* env = std::getenv("KYTY_GPU_BREADCRUMBS");
+	if (env == nullptr || env[0] != '1') return false;
+	if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdWriteBufferMarkerAMD == nullptr) {
+		std::printf("GPU breadcrumbs: VK_AMD_buffer_marker is not available\n");
+		return false;
+	}
+	vk::BufferCreateInfo info {};
+	info.size  = 16;
+	info.usage = vk::BufferUsageFlagBits::eTransferDst;
+	if (graphics.device.createBuffer(&info, nullptr, &b.buffer) != vk::Result::eSuccess) return false;
+	vk::MemoryRequirements req {};
+	graphics.device.getBufferMemoryRequirements(b.buffer, &req);
+	const auto props = graphics.physical_device.getMemoryProperties();
+	uint32_t   type  = UINT32_MAX;
+	for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+		const auto flags = props.memoryTypes[i].propertyFlags;
+		if ((req.memoryTypeBits & (1u << i)) != 0 &&
+		    (flags & vk::MemoryPropertyFlagBits::eHostVisible) &&
+		    (flags & vk::MemoryPropertyFlagBits::eHostCoherent)) {
+			type = i;
+			break;
+		}
+	}
+	if (type == UINT32_MAX) return false;
+	vk::MemoryAllocateInfo alloc {};
+	alloc.allocationSize  = req.size;
+	alloc.memoryTypeIndex = type;
+	if (graphics.device.allocateMemory(&alloc, nullptr, &b.memory) != vk::Result::eSuccess) return false;
+	graphics.device.bindBufferMemory(b.buffer, b.memory, 0);
+	void* mapped = nullptr;
+	if (graphics.device.mapMemory(b.memory, 0, 16, {}, &mapped) != vk::Result::eSuccess) return false;
+	b.values = static_cast<volatile uint32_t*>(mapped);
+	b.values[0] = b.values[1] = 0;
+	b.device  = graphics.device;
+	b.enabled = true;
+	std::printf("GPU breadcrumbs: enabled\n");
+	return true;
+}
+
+} // namespace
+
+void ReportGpuBreadcrumbs() {
+	auto& b = g_breadcrumbs;
+	if (!b.enabled) return;
+	std::scoped_lock lock(b.mutex);
+	const uint32_t started  = b.values[0];
+	const uint32_t finished = b.values[1];
+	static const char* const names[] = {"DispatchDirect", "DrawIndex", "DrawIndexAuto", "EopWrite",
+	                                    "EopInterrupt", "EopWriteBack", "EopFlip",
+	                                    "EopWriteBackFlip", "EopOnlyFlip", "DispatchIndirect",
+	                                    "Unknown"};
+	std::printf("GPU breadcrumbs: recorded=%u started=%u finished=%u\n", b.sequence, started, finished);
+	const uint32_t first = finished + 1;
+	const uint32_t last  = std::min(b.sequence, std::max(started, first) + 3);
+	for (uint32_t seq = first; seq <= last && seq - first < 24; ++seq) {
+		const auto& r = b.ring[seq % b.ring.size()];
+		std::printf("  %s #%u %s submit=%llu args=%u,%u,%u,%u,0x%016llx\n",
+		            seq <= started ? "RUNNING " : "queued  ", seq,
+		            r.op < std::size(names) ? names[r.op] : "?", static_cast<unsigned long long>(r.submit),
+		            r.arg0, r.arg1, r.arg2, r.arg3, static_cast<unsigned long long>(r.arg4));
+	}
+	std::fflush(stdout);
+}
 
 CommandBuffer::CommandBuffer(CommandScheduler& scheduler)
     : m_context(scheduler.Context()), m_graphics(scheduler.Graphics()) {}
@@ -58,6 +158,23 @@ void CommandBuffer::SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0,
 	m_debug_arg2      = arg2;
 	m_debug_arg3      = arg3;
 	m_debug_arg4      = arg4;
+	if (!g_breadcrumbs.initialized) {
+		std::scoped_lock lock(g_breadcrumbs.mutex);
+		InitBreadcrumbs(m_graphics);
+	}
+	if (g_breadcrumbs.enabled && !IsInvalid()) {
+		auto&    b = g_breadcrumbs;
+		uint32_t seq = 0;
+		{
+			std::scoped_lock lock(b.mutex);
+			seq = ++b.sequence;
+			b.ring[seq % b.ring.size()] = {op, submit_id, arg0, arg1, arg2, arg3, arg4};
+		}
+		auto fn = VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdWriteBufferMarkerAMD;
+		VkCommandBuffer cmd = m_buffer;
+		fn(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, b.buffer, 0, seq);
+		fn(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, b.buffer, 4, seq - 1);
+	}
 }
 
 void CommandBuffer::BeginRendering(const RenderState& state) const {
