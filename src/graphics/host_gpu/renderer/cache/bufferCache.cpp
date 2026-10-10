@@ -20,6 +20,7 @@
 #include <cinttypes>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -361,8 +362,51 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 				download_size = end - begin;
 			}
 		}
+		// Learn which pages the GPU never really changes (KYTY_SPEC_READBACK=0 disables).
+		static const bool speculate = [] {
+			const char* env = std::getenv("KYTY_SPEC_READBACK");
+			return env == nullptr || env[0] != '0';
+		}();
+		constexpr uint8_t  SpecThreshold = 3;
+		constexpr uint32_t SpecRecheck   = 32;
+		const uint64_t     page          = vaddr & ~(TRACKER_PAGE_SIZE - 1);
+		const bool         single_page   = vaddr + size <= page + TRACKER_PAGE_SIZE;
+		SpeculativePage*   spec          = nullptr;
+		if (speculate && single_page) {
+			spec = &m_speculative_pages[page / TRACKER_PAGE_SIZE];
+			if (!spec->volatile_ && spec->streak >= SpecThreshold &&
+			    (++spec->skips % SpecRecheck) != 0) {
+				Common::Perf::Count(Common::Perf::Counter::SpecSkip);
+				m_gpu_modified_ranges.Subtract(page, TRACKER_PAGE_SIZE);
+				m_memory_tracker.UnmarkRegionAsGpuModified(page, TRACKER_PAGE_SIZE);
+				if (is_write) {
+					m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
+				}
+				return;
+			}
+		}
+		static thread_local std::vector<uint8_t> before;
+		bool have_before = false;
+		if (spec != nullptr && !spec->volatile_) {
+			before.resize(TRACKER_PAGE_SIZE);
+			have_before =
+			    Libs::LibKernel::Memory::TryReadBacking(page, before.data(), TRACKER_PAGE_SIZE);
+		}
 		if (DownloadBufferMemory<false>(buffer, download_addr, download_size)) {
 			m_memory_tracker.UnmarkRegionAsGpuModified(download_addr, download_size);
+		}
+		if (have_before) {
+			static thread_local std::vector<uint8_t> after;
+			after.resize(TRACKER_PAGE_SIZE);
+			if (Libs::LibKernel::Memory::TryReadBacking(page, after.data(), TRACKER_PAGE_SIZE)) {
+				if (std::memcmp(before.data(), after.data(), TRACKER_PAGE_SIZE) == 0) {
+					Common::Perf::Count(Common::Perf::Counter::SpecUnchanged);
+					if (spec->streak < 255) ++spec->streak;
+				} else {
+					Common::Perf::Count(Common::Perf::Counter::SpecChanged);
+					spec->volatile_ = true;
+				}
+			}
 		}
 		if (is_write) {
 			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
@@ -579,6 +623,18 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
 	if (is_written) {
 		m_gpu_modified_ranges.Add(vaddr, size);
+		if (Common::Perf::Enabled() && size >= 1024 * 1024) {
+			static std::mutex                                   seen_mutex;
+			static std::vector<std::pair<uint64_t, uint64_t>>   seen;
+			std::scoped_lock                                     seen_lock(seen_mutex);
+			if (seen.size() < 64 &&
+			    std::find(seen.begin(), seen.end(), std::pair {vaddr, size}) == seen.end()) {
+				seen.emplace_back(vaddr, size);
+				std::printf("PERF large writable buffer binding addr=0x%016" PRIx64
+				            " size=0x%" PRIx64 "\n",
+				            vaddr, size);
+			}
+		}
 	}
 	return {&buffer, buffer.Offset(vaddr)};
 }

@@ -18,6 +18,7 @@
 #include <atomic>
 #include <map>
 #include <span>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -148,6 +149,15 @@ private:
 	BufferMap                                         m_buffers;
 	PageTable                                         m_page_table;
 	RangeSet                                          m_gpu_modified_ranges;
+	// Pages whose GPU copy matched guest memory on every verified readback. Games often bind
+	// large buffers as writable, which marks descriptor tables and constants inside them as
+	// GPU-dirty although the GPU never changes them; such pages skip the GPU drain.
+	struct SpeculativePage {
+		uint8_t  streak    = 0;
+		bool     volatile_ = false;
+		uint32_t skips     = 0;
+	};
+	std::unordered_map<uint64_t, SpeculativePage>     m_speculative_pages;
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
