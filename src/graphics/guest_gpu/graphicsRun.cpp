@@ -848,10 +848,29 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 	}
 }
 
+static bool ImplausibleDraw(const char* kind, uint32_t count, uint32_t instances) {
+	// A draw this large cannot finish within the host GPU timeout; it means the emulator read the
+	// arguments from the wrong place or too early. Skip it instead of losing the device.
+	constexpr uint32_t MaxInstances = 1u << 20u;
+	constexpr uint32_t MaxCount     = 1u << 26u;
+	if (instances <= MaxInstances && count <= MaxCount) {
+		return false;
+	}
+	static std::atomic<uint32_t> log_count {0};
+	if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+		std::printf("warning: skipping implausible %s: count=%u instances=%u\n", kind, count,
+		            instances);
+	}
+	return true;
+}
+
 void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 	args.index_type_and_size = m_index_type_and_size;
 	if (args.instance_count == 0) {
 		args.instance_count = m_num_instances;
+	}
+	if (ImplausibleDraw("indexed draw", args.index_count, args.instance_count)) {
+		return;
 	}
 	if (GraphicsRunDebugDumpEnabled() && (args.base_vertex != 0 || args.first_instance != 0)) {
 		LOGF("\t draw indexed offsets: base_vertex = %" PRId32 ", first_instance = %" PRIu32 "\n",
@@ -904,6 +923,15 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 	EXIT_NOT_IMPLEMENTED((draw_initiator & ~0x20u) != (indexed ? 0u : 2u));
 	EXIT_NOT_IMPLEMENTED(m_draw_indirect_args_base_addr == 0);
 
+	// The count and the arguments are often written by a compute pass recorded just before this
+	// draw (GPU culling). Make the GPU finish those writes and copy them back before reading.
+	auto& buffer_cache = m_renderer.GetBufferCache();
+	if (count_addr != nullptr) {
+		const auto addr = reinterpret_cast<uint64_t>(count_addr);
+		if (buffer_cache.HasGpuDirtyBytes(addr, sizeof(uint32_t))) {
+			buffer_cache.ReadMemory(addr, sizeof(uint32_t));
+		}
+	}
 	uint32_t draw_count = max_count_or_count;
 	if (count_addr != nullptr) {
 		draw_count = *count_addr;
@@ -918,6 +946,14 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 	const auto args_size = indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs);
 	EXIT_NOT_IMPLEMENTED(stride_in_bytes < args_size);
+
+	{
+		const auto first = m_draw_indirect_args_base_addr + data_offset;
+		const auto bytes = static_cast<uint64_t>(draw_count - 1u) * stride_in_bytes + args_size;
+		if (buffer_cache.HasGpuDirtyBytes(first, bytes)) {
+			buffer_cache.ReadMemory(first, bytes);
+		}
+	}
 
 	uint64_t index_size = 0;
 	if (indexed) {
@@ -1022,6 +1058,9 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 	if (args.instance_count == 0) {
 		args.instance_count = m_num_instances;
+	}
+	if (ImplausibleDraw("draw", args.vertex_count, args.instance_count)) {
+		return;
 	}
 	m_renderer.GetRenderExecutor().DrawAuto(m_submit_id, CurrentBuffer(), args);
 }
