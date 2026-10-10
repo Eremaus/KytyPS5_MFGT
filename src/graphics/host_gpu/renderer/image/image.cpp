@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
 
+#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -27,6 +28,29 @@ namespace {
 		case Prospero::ImageType::kColor3D: return vk::ImageType::e3D;
 		case Prospero::ImageType::kColor2D: return vk::ImageType::e2D;
 		default: EXIT("non-base image type: %u\n", static_cast<uint32_t>(type));
+	}
+}
+
+// Uncompressed format with one texel per compressed block, used for block-texel storage views.
+[[nodiscard]] vk::Format BlockSizedUintFormat(vk::Format format) {
+	switch (format) {
+		case vk::Format::eBc1RgbSrgbBlock:
+		case vk::Format::eBc1RgbUnormBlock:
+		case vk::Format::eBc1RgbaSrgbBlock:
+		case vk::Format::eBc1RgbaUnormBlock:
+		case vk::Format::eBc4SnormBlock:
+		case vk::Format::eBc4UnormBlock: return vk::Format::eR32G32Uint;
+		case vk::Format::eBc2SrgbBlock:
+		case vk::Format::eBc2UnormBlock:
+		case vk::Format::eBc3SrgbBlock:
+		case vk::Format::eBc3UnormBlock:
+		case vk::Format::eBc5SnormBlock:
+		case vk::Format::eBc5UnormBlock:
+		case vk::Format::eBc6HSfloatBlock:
+		case vk::Format::eBc6HUfloatBlock:
+		case vk::Format::eBc7SrgbBlock:
+		case vk::Format::eBc7UnormBlock: return vk::Format::eR32G32B32A32Uint;
+		default: return vk::Format::eUndefined;
 	}
 }
 
@@ -57,10 +81,32 @@ namespace {
 		usage |= vk::ImageUsageFlagBits::eSampled;
 		if (graphics.supports_block_texel_view) {
 			const auto storage = usage | vk::ImageUsageFlagBits::eStorage;
+			// Some drivers (amdvlk) reject storage usage for BC formats even with
+			// EXTENDED_USAGE, although writes go through an uncompressed block-texel view.
+			// KYTY_BC_STORAGE=1 requests storage anyway when the block-sized uint format of the
+			// view supports it.
+			static const bool force_bc_storage = [] {
+				const char* env = std::getenv("KYTY_BC_STORAGE");
+				return env != nullptr && env[0] == '1';
+			}();
+			const auto block_view_format = BlockSizedUintFormat(info.pixel_format);
+			const bool view_supports_storage =
+			    block_view_format != vk::Format::eUndefined &&
+			    HasFormatFeature(graphics.GetFormatProperties(block_view_format),
+			                     vk::FormatFeatureFlagBits::eStorageImage);
 			if (graphics.GetImageFormatProperties(info.pixel_format, HostImageType(info.type),
 			                                      vk::ImageTiling::eOptimal, storage,
 			                                      ImageCreateFlags(graphics, info),
 			                                      nullptr) == vk::Result::eSuccess) {
+				usage = storage;
+			} else if (force_bc_storage && view_supports_storage) {
+				static std::atomic_flag noted = ATOMIC_FLAG_INIT;
+				if (!noted.test_and_set(std::memory_order_relaxed)) {
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "KYTY_BC_STORAGE: enabling storage for block-compressed {} through {} "
+					    "block-texel views despite the driver query.\n",
+					    vk::to_string(info.pixel_format), vk::to_string(block_view_format)));
+				}
 				usage = storage;
 			} else {
 				static std::atomic_flag warned = ATOMIC_FLAG_INIT;
