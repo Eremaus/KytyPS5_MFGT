@@ -317,6 +317,7 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 // True when the mapped shader calls functions through runtime pointers (S_SWAPPC_B64 with a
 // return register), which the static recompiler cannot follow.
 bool ShaderUsesIndirectCalls(uint64_t addr);
+bool ShaderSkippedByUser(uint64_t addr);
 uint32_t ShaderPixelExportTarget(uint32_t shader_mask, uint32_t export_index);
 
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);
