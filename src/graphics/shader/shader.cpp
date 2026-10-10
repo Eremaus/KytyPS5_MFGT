@@ -103,6 +103,67 @@ bool ShaderSkippedByUser(uint64_t addr) {
 	return std::find(skip.begin(), skip.end(), addr) != skip.end();
 }
 
+void ShaderDumpForDebug(uint64_t addr, const HW::ComputeShaderInfo& cs, uint32_t x, uint32_t y,
+                        uint32_t z, uint32_t mode) {
+	// KYTY_DUMP_CS: list of compute shader addresses whose code and first dispatch are saved to
+	// _cs_<addr>.bin / _cs_<addr>.txt in the working directory (diagnostics).
+	static const std::vector<uint64_t> wanted = [] {
+		std::vector<uint64_t> list;
+		if (const char* env = std::getenv("KYTY_DUMP_CS"); env != nullptr) {
+			const char* p = env;
+			while (*p != '\0') {
+				char*      end   = nullptr;
+				const auto value = std::strtoull(p, &end, 16);
+				if (end == p) {
+					++p;
+					continue;
+				}
+				list.push_back(value);
+				p = end;
+			}
+		}
+		return list;
+	}();
+	if (std::find(wanted.begin(), wanted.end(), addr) == wanted.end()) {
+		return;
+	}
+	static std::mutex                 mutex;
+	static std::unordered_map<uint64_t, uint32_t> counts;
+	std::scoped_lock                  lock(mutex);
+	auto&                             count = counts[addr];
+	if (count >= 4) {
+		return;
+	}
+	const auto entry = ShaderGetMappedData(addr, "ShaderDumpForDebug");
+	char       name[64];
+	if (count == 0) {
+		std::snprintf(name, sizeof(name), "_cs_%016llx.bin", static_cast<unsigned long long>(addr));
+		if (FILE* f = std::fopen(name, "wb"); f != nullptr) {
+			std::fwrite(reinterpret_cast<const void*>(addr), 1, entry.data.code_size_bytes, f);
+			std::fclose(f);
+		}
+	}
+	std::snprintf(name, sizeof(name), "_cs_%016llx.txt", static_cast<unsigned long long>(addr));
+	if (FILE* f = std::fopen(name, count == 0 ? "w" : "a"); f != nullptr) {
+		std::fprintf(f, "dispatch #%u groups=%ux%ux%u mode=0x%08x code_size=%u scratch_dw=%u\n", count,
+		             x, y, z, mode, entry.data.code_size_bytes, entry.data.scratch_size_dwords);
+		std::fprintf(f, "user_sgpr count=%u:", cs.cs_user_sgpr.count);
+		for (uint32_t i = 0; i < cs.cs_user_sgpr.count && i < HW::UserSgprInfo::SGPRS_MAX; ++i) {
+			std::fprintf(f, " %08x", cs.cs_user_sgpr.value[i]);
+		}
+		std::fprintf(f, "\ncs_regs:");
+		const auto* words = reinterpret_cast<const uint32_t*>(&cs.cs_regs);
+		for (size_t i = 0; i < sizeof(cs.cs_regs) / sizeof(uint32_t); ++i) {
+			std::fprintf(f, " %08x", words[i]);
+		}
+		std::fprintf(f, "\n");
+		std::fclose(f);
+	}
+	std::printf("KYTY_DUMP_CS: saved dispatch #%u of shader 0x%016llx\n", count,
+	            static_cast<unsigned long long>(addr));
+	++count;
+}
+
 bool ShaderUsesIndirectCalls(uint64_t addr) {
 	// Upstream links small scalar leaf functions called through S_SWAPPC_B64, but exits on
 	// anything larger (e.g. ray-tracing hit shaders). KYTY_SKIP_SWAPPC=0 lets those dispatches
