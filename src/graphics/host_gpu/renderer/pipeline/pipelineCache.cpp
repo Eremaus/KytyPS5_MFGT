@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
 #include <limits>
@@ -489,7 +490,53 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 	InitializeDriverCache();
 }
 
+void PipelineCache::EnqueueCompile(std::function<void()> job) {
+	std::scoped_lock lock(m_compile_mutex);
+	if (m_compile_workers.empty()) {
+		const auto hw      = std::max(2u, std::thread::hardware_concurrency());
+		const auto workers = std::clamp(hw / 4u, 2u, 6u);
+		for (uint32_t i = 0; i < workers; ++i) {
+			m_compile_workers.emplace_back([this] {
+				for (;;) {
+					std::function<void()> next;
+					{
+						std::unique_lock wait_lock(m_compile_mutex);
+						m_compile_cv.wait(wait_lock,
+						                  [this] { return m_compile_stop || !m_compile_jobs.empty(); });
+						if (m_compile_jobs.empty()) return;
+						next = std::move(m_compile_jobs.front());
+						m_compile_jobs.pop_front();
+					}
+					next();
+					{
+						std::scoped_lock done_lock(m_compile_mutex);
+						--m_compile_inflight;
+					}
+					m_compile_cv.notify_all();
+				}
+			});
+		}
+	}
+	++m_compile_inflight;
+	m_compile_jobs.push_back(std::move(job));
+	m_compile_cv.notify_all();
+}
+
+void PipelineCache::WaitForCompiles() {
+	std::unique_lock lock(m_compile_mutex);
+	m_compile_cv.wait(lock, [this] { return m_compile_inflight == 0; });
+}
+
 PipelineCache::~PipelineCache() {
+	WaitForCompiles();
+	{
+		std::scoped_lock lock(m_compile_mutex);
+		m_compile_stop = true;
+	}
+	m_compile_cv.notify_all();
+	for (auto& worker: m_compile_workers) {
+		worker.join();
+	}
 	Save();
 	auto destroy = [this](const auto& pipelines) {
 		for (const auto& [key, pipeline]: pipelines) {
@@ -596,6 +643,7 @@ void PipelineCache::Save() {
 	if (m_driver_cache == nullptr) {
 		return;
 	}
+	WaitForCompiles();
 
 	size_t               size = 0;
 	vk::Result           result;
@@ -963,13 +1011,61 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	}
 
 	auto cached = std::make_unique<Pipeline>();
-	LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
-	CreatePipelineInternal(m_graphics, *cached, rendering, key.vertex_input, vertex_info,
-	                       ps_input_info, programs, static_params, m_driver_cache);
-	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
-
-	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
-	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
+	static const bool async_pipelines = [] {
+		const char* env = std::getenv("KYTY_ASYNC_PIPELINES");
+		return env == nullptr || env[0] != '0';
+	}();
+	if (!async_pipelines) {
+		LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
+		CreatePipelineInternal(m_graphics, *cached, rendering, key.vertex_input, vertex_info,
+		                       ps_input_info, programs, static_params, m_driver_cache);
+		LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
+		EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
+		EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
+	} else {
+		// Build the pipeline on a worker thread from private copies of every input; the draw
+		// that asked for it (and later ones) are skipped until it is ready.
+		struct Job {
+			PipelineRenderingState                             rendering;
+			PipelineVertexInputState                           vertex_input;
+			PipelineStaticParameters                           static_params;
+			GraphicsPrograms                                   programs;
+			std::vector<ShaderVertexInputInfo>                 vertex_info;
+			std::vector<ShaderRecompiler::IR::CompiledShaderInfo> vertex_programs;
+			ShaderPixelInputInfo                               ps_info {};
+			ShaderRecompiler::IR::CompiledShaderInfo           ps_program;
+			bool                                               ps_active = false;
+		};
+		auto job           = std::make_shared<Job>();
+		job->rendering     = rendering;
+		job->vertex_input  = key.vertex_input;
+		job->static_params = static_params;
+		job->programs      = programs;
+		job->vertex_info.assign(vertex_info.begin(), vertex_info.end());
+		job->vertex_programs.reserve(job->vertex_info.size());
+		for (auto& info: job->vertex_info) {
+			job->vertex_programs.push_back(*info.stage.program);
+		}
+		for (size_t i = 0; i < job->vertex_info.size(); ++i) {
+			job->vertex_info[i].stage.program = &job->vertex_programs[i];
+		}
+		if (ps_active) {
+			job->ps_active             = true;
+			job->ps_info               = *ps_input_info;
+			job->ps_program            = *ps_input_info->stage.program;
+			job->ps_info.stage.program = &job->ps_program;
+		}
+		cached->ready.store(false, std::memory_order_relaxed);
+		auto* target = cached.get();
+		EnqueueCompile([this, job, target] {
+			CreatePipelineInternal(m_graphics, *target, job->rendering, job->vertex_input,
+			                       job->vertex_info, job->ps_active ? &job->ps_info : nullptr,
+			                       job->programs, job->static_params, m_driver_cache);
+			EXIT_NOT_IMPLEMENTED(target->pipeline == nullptr);
+			EXIT_NOT_IMPLEMENTED(target->pipeline_layout == nullptr);
+			target->ready.store(true, std::memory_order_release);
+		});
+	}
 
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);

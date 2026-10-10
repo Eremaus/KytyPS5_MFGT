@@ -29,6 +29,7 @@ enum class Counter : uint32_t {
 	ReadIndirectArgs,
 	ReadInvalidate,
 	BdaFullWalk,
+	PipelineSkip,
 	Count
 };
 
@@ -262,13 +263,14 @@ inline void OnFlip() {
 	}
 	std::printf("PERF readback sources (count/s): cpu_page_fault=%llu texture_metadata=%llu "
 	            "shader_scalar_read=%llu indirect_args=%llu cpu_write_invalidate=%llu "
-	            "bda_full_walks=%llu\n",
+	            "bda_full_walks=%llu draws_skipped_compiling=%llu\n",
 	            static_cast<unsigned long long>(n(Counter::ReadFault)),
 	            static_cast<unsigned long long>(n(Counter::ReadMetadata)),
 	            static_cast<unsigned long long>(n(Counter::ReadScalar)),
 	            static_cast<unsigned long long>(n(Counter::ReadIndirectArgs)),
 	            static_cast<unsigned long long>(n(Counter::ReadInvalidate)),
-	            static_cast<unsigned long long>(n(Counter::BdaFullWalk)));
+	            static_cast<unsigned long long>(n(Counter::BdaFullWalk)),
+	            static_cast<unsigned long long>(n(Counter::PipelineSkip)));
 	ReportHotspots(now);
 	std::fflush(stdout);
 }

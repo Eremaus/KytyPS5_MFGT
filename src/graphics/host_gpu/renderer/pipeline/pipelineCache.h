@@ -8,7 +8,14 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/shader.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <thread>
+#include <vector>
 #include <filesystem>
 #include <memory>
 #include <span>
@@ -114,6 +121,8 @@ public:
 		vk::Pipeline            pipeline              = nullptr;
 		vk::DescriptorSetLayout descriptor_set_layout = nullptr;
 		bool                    uses_push_descriptors = false;
+		// False while the pipeline is still being built on a background thread.
+		std::atomic<bool>       ready {true};
 	};
 
 	struct GraphicsPrograms {
@@ -180,6 +189,16 @@ private:
 	std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> m_compute_pipelines;
 
 	void InitializeDriverCache();
+
+	// Background pipeline compilation (KYTY_ASYNC_PIPELINES, on by default).
+	void EnqueueCompile(std::function<void()> job);
+	void WaitForCompiles();
+	std::mutex                        m_compile_mutex;
+	std::condition_variable           m_compile_cv;
+	std::deque<std::function<void()>> m_compile_jobs;
+	std::vector<std::thread>          m_compile_workers;
+	uint32_t                          m_compile_inflight = 0;
+	bool                              m_compile_stop     = false;
 };
 
 void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pixel_program_id);
