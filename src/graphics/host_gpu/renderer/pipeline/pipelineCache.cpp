@@ -192,8 +192,9 @@ constexpr size_t MaterializeMemoSlots = 8;
 
 bool MaterializeMemoEnabled() {
 	static const bool enabled = [] {
+		// Off by default: it caused rendering glitches in GT7. KYTY_MATERIALIZE_MEMO=1 enables it.
 		const char* env = std::getenv("KYTY_MATERIALIZE_MEMO");
-		return env == nullptr || env[0] != '0';
+		return env != nullptr && env[0] == '1';
 	}();
 	return enabled;
 }

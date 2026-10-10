@@ -265,6 +265,14 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (sh_ctx.GetCs().cs_regs.data_addr == 0) {
 		return;
 	}
+	if (ShaderSkippedByUser(sh_ctx.GetCs().cs_regs.data_addr)) {
+		static std::atomic<uint32_t> skip_log {0};
+		if (skip_log.fetch_add(1, std::memory_order_relaxed) < 4) {
+			std::printf("warning: KYTY_SKIP_CS skipping compute dispatch, shader=0x%016" PRIx64 "\n",
+			            static_cast<uint64_t>(sh_ctx.GetCs().cs_regs.data_addr));
+		}
+		return;
+	}
 	if (ShaderUsesIndirectCalls(sh_ctx.GetCs().cs_regs.data_addr)) {
 		// Ray-tracing style shaders call hit functions through pointers loaded from memory.
 		// The static recompiler cannot follow them yet, so skip the dispatch instead of exiting.
@@ -466,6 +474,14 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	Common::LockGuard lock(m_context.GetMutex());
 	const auto& cs_regs = buffer.GetShaders().GetCs();
 	if (cs_regs.cs_regs.data_addr == 0) {
+		return;
+	}
+	if (ShaderSkippedByUser(cs_regs.cs_regs.data_addr)) {
+		static std::atomic<uint32_t> skip_log {0};
+		if (skip_log.fetch_add(1, std::memory_order_relaxed) < 4) {
+			std::printf("warning: KYTY_SKIP_CS skipping compute dispatch, shader=0x%016" PRIx64 "\n",
+			            static_cast<uint64_t>(cs_regs.cs_regs.data_addr));
+		}
 		return;
 	}
 	if (ShaderUsesIndirectCalls(cs_regs.cs_regs.data_addr)) {

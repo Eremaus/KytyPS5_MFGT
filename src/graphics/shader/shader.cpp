@@ -1,4 +1,5 @@
 #include "graphics/shader/shader.h"
+#include <cstdlib>
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -77,6 +78,28 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	}
 
 	EXIT("%s shader=0x%016" PRIx64 " is missing from ShaderMap\n", label, addr);
+}
+
+bool ShaderSkippedByUser(uint64_t addr) {
+	// KYTY_SKIP_CS: comma/space separated list of compute shader addresses to skip (diagnostics).
+	static const std::vector<uint64_t> skip = [] {
+		std::vector<uint64_t> list;
+		if (const char* env = std::getenv("KYTY_SKIP_CS"); env != nullptr) {
+			const char* p = env;
+			while (*p != '\0') {
+				char*      end   = nullptr;
+				const auto value = std::strtoull(p, &end, 16);
+				if (end == p) {
+					++p;
+					continue;
+				}
+				list.push_back(value);
+				p = end;
+			}
+		}
+		return list;
+	}();
+	return std::find(skip.begin(), skip.end(), addr) != skip.end();
 }
 
 bool ShaderUsesIndirectCalls(uint64_t addr) {
