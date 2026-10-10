@@ -485,6 +485,13 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		image_atomic_int64.pNext = supported_features2.pNext;
 		supported_features2.pNext = &image_atomic_int64;
 	}
+	const bool device_fault_extension =
+	    HasExtension(device_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+	vk::PhysicalDeviceFaultFeaturesEXT supported_fault {};
+	if (device_fault_extension) {
+		supported_fault.pNext = supported_features2.pNext;
+		supported_features2.pNext = &supported_fault;
+	}
 	physical_device.getFeatures2(&supported_features2);
 	graphics.shader_image_int64_atomics_enabled = image_atomic_int64.shaderImageInt64Atomics;
 
@@ -638,6 +645,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		image_atomic_int64.sparseImageInt64Atomics = VK_FALSE;
 		create_info.pNext = &image_atomic_int64;
 	}
+	vk::PhysicalDeviceFaultFeaturesEXT fault_features {};
+	if (device_fault_extension && supported_fault.deviceFault == VK_TRUE) {
+		fault_features.deviceFault = VK_TRUE;
+		fault_features.deviceFaultVendorBinary = VK_FALSE;
+		fault_features.pNext = const_cast<void*>(create_info.pNext);
+		create_info.pNext = &fault_features;
+		graphics.device_fault_enabled = true;
+	}
+	LOGF("Vulkan device fault reporting: %s\n", graphics.device_fault_enabled ? "true" : "false");
+	std::printf("Vulkan device fault reporting: %s\n", graphics.device_fault_enabled ? "true" : "false");
 	create_info.pQueueCreateInfos       = &queue_create_info;
 	create_info.queueCreateInfoCount    = 1;
 	create_info.enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size());
@@ -1010,6 +1027,9 @@ void WindowContext::CreateVulkan() {
 			if (HasExtension(available_extensions, extension)) {
 				device_extensions.push_back(extension);
 			}
+		}
+		if (HasExtension(available_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
 		}
 		if (HasExtension(available_extensions, VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME)) {
 			device_extensions.push_back(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);

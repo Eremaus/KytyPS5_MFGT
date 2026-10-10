@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <optional>
+#include <vector>
+#include <iterator>
 
 namespace Libs::Graphics {
 
@@ -25,6 +27,52 @@ void ReportVulkanFatal(const char* what, vk::Result result, uint64_t tick, uint3
 	            " args=%u,%u,%u,%u,0x%016" PRIx64 "\n",
 	            what, vk::to_string(result).c_str(), static_cast<int>(result), tick, debug_op,
 	            debug_submit, arg0, arg1, arg2, arg3, arg4);
+	std::fflush(stdout);
+}
+
+void ReportDeviceFault(GraphicContext& graphics) {
+	if (!graphics.device_fault_enabled) {
+		std::printf("GPU fault details: not available (VK_EXT_device_fault unsupported)\n");
+		return;
+	}
+	auto fn = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT;
+	if (fn == nullptr) {
+		std::printf("GPU fault details: vkGetDeviceFaultInfoEXT not loaded\n");
+		return;
+	}
+	VkDeviceFaultCountsEXT counts {VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+	VkDevice device = graphics.device;
+	if (fn(device, &counts, nullptr) != VK_SUCCESS && counts.addressInfoCount == 0 &&
+	    counts.vendorInfoCount == 0) {
+		std::printf("GPU fault details: query failed\n");
+		return;
+	}
+	std::vector<VkDeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+	std::vector<VkDeviceFaultVendorInfoEXT>  vendors(counts.vendorInfoCount);
+	counts.vendorBinarySize = 0;
+	VkDeviceFaultInfoEXT info {VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
+	info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
+	info.pVendorInfos  = vendors.empty() ? nullptr : vendors.data();
+	const auto result  = fn(device, &counts, &info);
+	std::printf("GPU fault details (result %d): %s\n", static_cast<int>(result), info.description);
+	static const char* const kinds[] = {"none", "read invalid", "write invalid", "execute invalid",
+	                                    "instruction pointer unknown",
+	                                    "instruction pointer invalid",
+	                                    "instruction pointer fault"};
+	for (uint32_t i = 0; i < counts.addressInfoCount; ++i) {
+		const auto& a    = addresses[i];
+		const auto  kind = static_cast<uint32_t>(a.addressType);
+		std::printf("  address #%u: %s addr=0x%016llx precision=0x%llx\n", i,
+		            kind < std::size(kinds) ? kinds[kind] : "?",
+		            static_cast<unsigned long long>(a.reportedAddress),
+		            static_cast<unsigned long long>(a.addressPrecision));
+	}
+	for (uint32_t i = 0; i < counts.vendorInfoCount; ++i) {
+		std::printf("  vendor #%u: %s code=0x%llx data=0x%llx\n", i, vendors[i].description,
+		            static_cast<unsigned long long>(vendors[i].vendorFaultCode),
+		            static_cast<unsigned long long>(vendors[i].vendorFaultData));
+	}
+	LOGF("GPU fault details: %s\n", info.description);
 	std::fflush(stdout);
 }
 
@@ -375,6 +423,9 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	}
 
 	if (result != vk::Result::eSuccess) {
+		if (result == vk::Result::eErrorDeviceLost) {
+			ReportDeviceFault(graphics);
+		}
 		ReportVulkanFatal("vkQueueSubmit", result, tick, m_command.m_debug_op,
 		                  m_command.m_debug_submit_id, m_command.m_debug_arg0,
 		                  m_command.m_debug_arg1, m_command.m_debug_arg2, m_command.m_debug_arg3,
