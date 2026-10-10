@@ -116,6 +116,26 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 	       Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes());
 }
 
+// Ordinary (non-specializing) walker reads. GT7 keeps descriptor tables inside buffers that are
+// also bound as GPU-writable, so exact reads drain the GPU ~200 times a second. By default the
+// walker reads the last CPU-visible copy instead; KYTY_SRT_EXACT=1 restores exact reads.
+bool ReadShaderGuestMemoryRelaxed(void*, uint64_t address, std::span<uint32_t> values) {
+	if (values.empty()) return false;
+	if (!Libs::LibKernel::Memory::TryReadBufferBackingRelaxed(address, values.data(),
+	                                                          values.size_bytes())) {
+		std::memcpy(values.data(), reinterpret_cast<const void*>(address), values.size_bytes());
+	}
+	return true;
+}
+
+static bool SrtExactReads() {
+	static const bool exact = [] {
+		const char* env = std::getenv("KYTY_SRT_EXACT");
+		return env != nullptr && env[0] == '1';
+	}();
+	return exact;
+}
+
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {
 	if (!Config::GraphicsDebugDumpEnabled()) {
@@ -351,6 +371,9 @@ struct PipelineCache::ProgramCache {
 		    .shader_base                = params.Base(),
 		    .read_specialization_memory = ReadShaderGuestMemory,
 		};
+		if (!SrtExactReads()) {
+			runtime.read_memory = ReadShaderGuestMemoryRelaxed;
+		}
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			runtime.workgroup_counts = input_info.workgroup_counts;
 		}

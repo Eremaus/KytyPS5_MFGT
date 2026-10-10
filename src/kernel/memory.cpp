@@ -892,6 +892,37 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return TryReadBacking(vaddr, data, size);
 }
 
+bool TryReadBufferBackingRelaxed(uint64_t vaddr, void* data, uint64_t size) {
+	if (!TryReadBacking(vaddr, data, size)) {
+		return false;
+	}
+	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size) ||
+	    !Graphics::GuestGpu::IsGpuThread()) {
+		return true;
+	}
+	auto& buffers = GetGpuResources().GetBufferCache();
+	if (!buffers.HasGpuDirtyBytes(vaddr, size)) {
+		return true;
+	}
+	Common::Perf::Count(Common::Perf::Counter::SpecSkip);
+	// With the perf meter on, check one stale read in 64 against the GPU copy so the log shows
+	// how often the walker would have seen different data.
+	if (Common::Perf::Enabled()) {
+		static uint64_t sample = 0;
+		if ((++sample % 64) == 0 && size <= 64) {
+			uint8_t fresh[64];
+			Common::Perf::OriginScope origin(Common::Perf::OriginScalar);
+			buffers.ReadMemory(vaddr, size);
+			if (TryReadBacking(vaddr, fresh, size)) {
+				Common::Perf::Count(std::memcmp(fresh, data, size) == 0
+				                        ? Common::Perf::Counter::SpecUnchanged
+				                        : Common::Perf::Counter::SpecChanged);
+			}
+		}
+	}
+	return true;
+}
+
 uint64_t TryClampRangeSize(uint64_t vaddr, uint64_t size) {
 	EXIT_IF(g_virtual_ranges == nullptr);
 	return g_virtual_ranges->ClampRangeSize(vaddr, size);

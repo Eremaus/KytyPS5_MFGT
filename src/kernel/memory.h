@@ -115,6 +115,10 @@ int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot);
 bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size);
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
+// Reads guest memory for the shader resource walker without draining the GPU when the range is
+// GPU-dirty: the last CPU-visible copy is returned (it may be stale). Returns false when the
+// range has no direct backing; the caller then reads it the ordinary way.
+bool                   TryReadBufferBackingRelaxed(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);
 // Like ClampRangeSize, but returns 0 for an unmapped start address instead of exiting.

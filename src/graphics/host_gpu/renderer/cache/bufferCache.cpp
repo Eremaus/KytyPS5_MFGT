@@ -365,7 +365,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		// Learn which pages the GPU never really changes (KYTY_SPEC_READBACK=0 disables).
 		static const bool speculate = [] {
 			const char* env = std::getenv("KYTY_SPEC_READBACK");
-			return env == nullptr || env[0] != '0';
+			return env != nullptr && env[0] == '1';
 		}();
 		constexpr uint8_t  SpecThreshold = 3;
 		constexpr uint32_t SpecRecheck   = 32;

@@ -267,8 +267,8 @@ inline void OnFlip() {
 	std::printf("PERF readback sources (count/s): cpu_page_fault=%llu texture_metadata=%llu "
 	            "shader_scalar_read=%llu indirect_args=%llu cpu_write_invalidate=%llu "
 	            "bda_full_walks=%llu draws_skipped_compiling=%llu\n"
-	            "PERF readback learning (count/s): skipped_unchanged_pages=%llu verified_unchanged=%llu "
-	            "verified_changed=%llu\n",
+	            "PERF srt relaxed reads (count/s): stale_ok_reads=%llu sampled_same=%llu "
+	            "sampled_different=%llu\n",
 	            static_cast<unsigned long long>(n(Counter::ReadFault)),
 	            static_cast<unsigned long long>(n(Counter::ReadMetadata)),
 	            static_cast<unsigned long long>(n(Counter::ReadScalar)),
