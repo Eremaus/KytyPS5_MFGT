@@ -756,8 +756,16 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.samples       = vulkan_sample_count(info.samples);
 
 	vk::ImageFormatProperties properties {};
+	// With KYTY_BC_STORAGE the storage bit on a BC image is known to fail the driver query;
+	// validate the creation without it and let vkCreateImage decide.
+	const bool forced_bc_storage = info.IsBlock() &&
+	                               static_cast<bool>(create.usage & vk::ImageUsageFlagBits::eStorage) &&
+	                               BlockSizedUintFormat(create.format) != vk::Format::eUndefined;
+	const auto checked_usage =
+	    forced_bc_storage ? (create.usage & ~vk::ImageUsageFlags(vk::ImageUsageFlagBits::eStorage))
+	                      : create.usage;
 	if (graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
-	                                      create.usage, create.flags,
+	                                      checked_usage, create.flags,
 	                                      &properties) != vk::Result::eSuccess ||
 	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
 		EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
@@ -768,6 +776,11 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	}
 
 	if (!graphics.CreateImage(create, backing)) {
+		if (forced_bc_storage) {
+			EXIT("the driver refused a block-compressed image with storage usage (format=%d); "
+			     "remove KYTY_BC_STORAGE=1 to run without it\n",
+			     static_cast<int>(create.format));
+		}
 		EXIT("failed to create image: extent=%ux%ux%u format=%d layers=%u levels=%u\n",
 		     create.extent.width, create.extent.height, create.extent.depth,
 		     static_cast<int>(create.format), create.arrayLayers, create.mipLevels);
