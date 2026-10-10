@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 
+#include <cstdlib>
 #include <algorithm>
 #include <bit>
 #include <functional>
@@ -88,8 +89,51 @@ void EmitReturn(ValueEmitContext& ctx) {
 	ctx.state.builder.AddFunction(spv::OpReturn);
 }
 
+// Guest loops whose trip count depends on memory (tree walks, linked lists) never end when the
+// emulator hands them stale data, which hangs the host GPU until the driver resets the device.
+// Count loop iterations per invocation and force every loop exit once the budget is spent.
+// KYTY_LOOP_WATCHDOG=<iterations> changes the budget (default 65536); 0 disables the watchdog.
+uint32_t LoopWatchdogLimit() {
+	static const uint32_t limit = [] {
+		const char* env = std::getenv("KYTY_LOOP_WATCHDOG");
+		return env != nullptr ? static_cast<uint32_t>(std::strtoul(env, nullptr, 0)) : (1u << 16u);
+	}();
+	return limit;
+}
+
+bool LoopWatchdogEnabled() {
+	return LoopWatchdogLimit() != 0;
+}
+
+bool IsLoopMergeBlock(const IR::Program& program, const IR::Block* candidate) {
+	for (const auto* block: program.blocks) {
+		if (block->terminator.loop_header && block->terminator.merge_block == candidate) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void EmitLoopWatchdogTick(EmitterState& state) {
+	if (state.loop_watchdog_variable == 0) return;
+	const auto count = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), count, state.loop_watchdog_variable);
+	const auto next = Binary(state, spv::OpIAdd, TypeU32(state), count, ConstantU32(state, 1));
+	state.builder.AddFunction(spv::OpStore, state.loop_watchdog_variable, next);
+}
+
+uint32_t EmitLoopWatchdogExpired(EmitterState& state) {
+	const auto count = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), count, state.loop_watchdog_variable);
+	return Binary(state, spv::OpUGreaterThan, TypeBool(state), count,
+	              ConstantU32(state, LoopWatchdogLimit()));
+}
+
 void EmitStructuredTerminator(ValueEmitContext& ctx, const IR::Block* block) {
 	const auto& term       = block->terminator;
+	if (term.loop_header) {
+		EmitLoopWatchdogTick(ctx.state);
+	}
 	const auto  emit_merge = [&]() {
 		if (term.loop_header) {
 			const auto* merge = term.merge_block;
@@ -123,7 +167,23 @@ void EmitStructuredTerminator(ValueEmitContext& ctx, const IR::Block* block) {
 				EmitReturn(ctx);
 				return;
 			}
-			const auto condition = ctx.Def(block->condition);
+			auto condition = ctx.Def(block->condition);
+			if (ctx.state.loop_watchdog_variable != 0) {
+				const bool true_exits  = IsLoopMergeBlock(ctx.state.program, true_block);
+				const bool false_exits = IsLoopMergeBlock(ctx.state.program, false_block);
+				if (true_exits != false_exits) {
+					const auto expired = EmitLoopWatchdogExpired(ctx.state);
+					if (true_exits) {
+						condition = Binary(ctx.state, spv::OpLogicalOr, TypeBool(ctx.state),
+						                   condition, expired);
+					} else {
+						const auto alive = Unary(ctx.state, spv::OpLogicalNot, TypeBool(ctx.state),
+						                         expired);
+						condition = Binary(ctx.state, spv::OpLogicalAnd, TypeBool(ctx.state),
+						                   condition, alive);
+					}
+				}
+			}
 			emit_merge();
 			ctx.state.builder.AddFunction(spv::OpBranchConditional, condition,
 			                              true_block->Definition(), false_block->Definition());
@@ -694,6 +754,16 @@ void EmitProgram(EmitterState& state) {
 		state.builder.AddFunction(spv::OpVariable,
 		                          TypePointer(state, spv::StorageClassFunction, TypeU32(state)),
 		                          state.pixel_valid_mask_variable, spv::StorageClassFunction);
+	}
+	state.loop_watchdog_variable = 0;
+	if (!state.program.dispatcher_fallback && LoopWatchdogEnabled() &&
+	    std::ranges::any_of(state.program.blocks,
+	                        [](const IR::Block* b) { return b->terminator.loop_header; })) {
+		state.loop_watchdog_variable = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpVariable,
+		                          TypePointer(state, spv::StorageClassFunction, TypeU32(state)),
+		                          state.loop_watchdog_variable, spv::StorageClassFunction,
+		                          ConstantU32(state, 0));
 	}
 	for (uint32_t half = 0; half < state.lane_count; half++) {
 		auto& lane = half == 0 ? ctx : high;
