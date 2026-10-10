@@ -317,6 +317,8 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 // return register), which the static recompiler cannot follow.
 bool ShaderUsesIndirectCalls(uint64_t addr);
 bool ShaderSkippedByUser(uint64_t addr);
+void ShaderDumpForDebug(uint64_t addr, const HW::ComputeShaderInfo& cs, uint32_t x, uint32_t y,
+                        uint32_t z, uint32_t mode);
 uint32_t ShaderPixelExportTarget(uint32_t shader_mask, uint32_t export_index);
 
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);

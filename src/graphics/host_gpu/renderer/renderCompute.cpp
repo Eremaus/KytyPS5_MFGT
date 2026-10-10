@@ -265,6 +265,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (sh_ctx.GetCs().cs_regs.data_addr == 0) {
 		return;
 	}
+	ShaderDumpForDebug(sh_ctx.GetCs().cs_regs.data_addr, sh_ctx.GetCs(), thread_group_x,
+	                   thread_group_y, thread_group_z, mode);
 	if (ShaderSkippedByUser(sh_ctx.GetCs().cs_regs.data_addr)) {
 		static std::atomic<uint32_t> skip_log {0};
 		if (skip_log.fetch_add(1, std::memory_order_relaxed) < 4) {
