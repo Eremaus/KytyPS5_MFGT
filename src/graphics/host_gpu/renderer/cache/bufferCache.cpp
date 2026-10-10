@@ -311,12 +311,25 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	}
 	m_memory_tracker.InvalidateRegion(vaddr, size, [this, vaddr, size] {
 		Common::Perf::Scope perf_scope(Common::Perf::Counter::ReadInvalidate);
+		Common::Perf::OriginScope origin_scope(Common::Perf::t_readback_origin != 0
+		                                           ? Common::Perf::t_readback_origin
+		                                           : Common::Perf::OriginInvalidate);
 		ReadMemory(vaddr, size, true);
 	});
 }
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	Common::Perf::Scope perf_scope(Common::Perf::Counter::BufferReadback);
+	struct HotspotTimer {
+		uint64_t origin = Common::Perf::t_readback_origin;
+		int64_t  start  = Common::Perf::Enabled() ? Common::Perf::NowNs() : 0;
+		~HotspotTimer() {
+			if (start != 0) {
+				Common::Perf::RecordReadback(origin,
+				                             static_cast<uint64_t>(Common::Perf::NowNs() - start));
+			}
+		}
+	} hotspot_timer;
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",

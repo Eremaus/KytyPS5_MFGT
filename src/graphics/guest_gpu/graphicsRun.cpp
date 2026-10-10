@@ -1,6 +1,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 
 #include "common/assert.h"
+#include "common/perfStats.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -929,6 +930,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 	if (count_addr != nullptr) {
 		const auto addr = reinterpret_cast<uint64_t>(count_addr);
 		if (buffer_cache.HasGpuDirtyBytes(addr, sizeof(uint32_t))) {
+			Common::Perf::OriginScope origin(Common::Perf::OriginIndirectCount);
 			buffer_cache.ReadMemory(addr, sizeof(uint32_t));
 		}
 	}
@@ -951,6 +953,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		const auto first = m_draw_indirect_args_base_addr + data_offset;
 		const auto bytes = static_cast<uint64_t>(draw_count - 1u) * stride_in_bytes + args_size;
 		if (buffer_cache.HasGpuDirtyBytes(first, bytes)) {
+			Common::Perf::OriginScope origin(Common::Perf::OriginIndirectArgs);
 			buffer_cache.ReadMemory(first, bytes);
 		}
 	}

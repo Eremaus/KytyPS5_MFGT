@@ -885,6 +885,7 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 		auto& buffers = GetGpuResources().GetBufferCache();
 		if (buffers.HasGpuDirtyBytes(vaddr, size)) {
 			Common::Perf::Scope perf_scope(Common::Perf::Counter::ReadScalar);
+			Common::Perf::OriginScope origin(Common::Perf::OriginScalar);
 			buffers.ReadMemory(vaddr, size);
 		}
 	}
